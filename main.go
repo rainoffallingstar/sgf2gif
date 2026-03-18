@@ -50,6 +50,7 @@ type renderConfig struct {
 	analysis        *analysisSeries
 	currentFrame    int
 	katagoView      string
+	summaryFrame    bool
 }
 
 type renderLayout struct {
@@ -89,6 +90,11 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		if len(out.sgfData) > 0 && out.sgfPath != "" {
+			if err := saveBytes(out.sgfPath, out.sgfData); err != nil {
+				log.Fatal(err)
+			}
+		}
 	}
 }
 
@@ -107,7 +113,7 @@ func parseArgs() (*options, error) {
 	katagoBin := fs.String("katago-bin", "", "path to the KataGo executable")
 	katagoModel := fs.String("katago-model", "", "path to the KataGo model (.bin.gz)")
 	katagoConfig := fs.String("katago-config", "", "path to the KataGo analysis config (.cfg)")
-	katagoStrength := fs.String("katago-strength", "", "KataGo strength preset: fast, strong, or monster")
+	katagoStrength := fs.String("katago-strength", "", "KataGo strength preset: mild, fast, strong, or monster")
 	katagoView := fs.String("katago-view", "black", "KataGo display perspective: black or white")
 	katagoVisits := fs.Int("katago-visits", 200, "maximum KataGo visits per rendered position")
 	katagoThreads := fs.Int("katago-threads", 2, "number of KataGo analysis threads")
@@ -228,12 +234,35 @@ func save(path string, g *gif.GIF) (err error) {
 }
 
 func usage() {
-	log.Printf("usage: %s [--download-sgf] [--download-limit N] [--download-cookie-file PATH] [--move-numbers] [--recent-move-numbers N] [--variation-path 2,1,...] [--all-variations] [--katago-analyze] [--katago-bin PATH] [--katago-model PATH] [--katago-config PATH] [--katago-strength fast|strong|monster] [--katago-view black|white] [--katago-visits N] [--katago-threads N] [--katago-top-moves N] input output\n", os.Args[0])
+	log.Printf(
+		"usage: %s [options] input output\n"+
+			"\n"+
+			"core options:\n"+
+			"  --move-numbers                     draw move numbers on stones\n"+
+			"  --recent-move-numbers N           draw move numbers only for the most recent N moves\n"+
+			"  --variation-path 2,1,...          choose a specific SGF variation path\n"+
+			"  --all-variations                  export every leaf variation to separate GIFs\n"+
+			"  --download-sgf                    download SGF instead of rendering GIF output\n"+
+			"\n"+
+			"katago options:\n"+
+			"  --katago-analyze                  analyze positions with KataGo\n"+
+			"  --katago-strength mild|fast|strong|monster\n"+
+			"  --katago-view black|white         choose analysis perspective\n"+
+			"  --katago-visits N                 set KataGo visit budget directly\n"+
+			"  --katago-threads N                set KataGo analysis threads\n"+
+			"  --katago-top-moves N              number of candidate moves to draw on board\n"+
+			"\n"+
+			"outputs:\n"+
+			"  GIF review animation, and when KataGo data is present, a companion *.katago.sgf cache file.\n",
+		os.Args[0],
+	)
 }
 
 type renderOutput struct {
-	path string
-	gif  *gif.GIF
+	path    string
+	gif     *gif.GIF
+	sgfPath string
+	sgfData []byte
 }
 
 func sgfToGif(opts *options) (*gif.GIF, error) {
@@ -296,12 +325,18 @@ func sgfToGifs(opts *options) ([]renderOutput, error) {
 			return nil, err
 		}
 
-		var analysis *analysisSeries
+		analysis, err := cachedAnalysisFromGame(game, boardSize, path)
+		if err != nil {
+			return nil, err
+		}
 		if opts.enableKataGo {
 			analysis, err = analyzeActionsWithKataGo(info, initial, actions, koRule, katagoOptionsFromCLI(opts))
 			if err != nil {
 				return nil, err
 			}
+		}
+		if analysis != nil {
+			analysis.summary = buildAnalysisSummary(actions, analysis)
 		}
 
 		cfg := renderConfig{
@@ -323,9 +358,22 @@ func sgfToGifs(opts *options) ([]renderOutput, error) {
 			return nil, err
 		}
 
+		outputPath := variationOutputPath(opts.outputPath, path, len(paths))
+		var annotatedSGF []byte
+		var annotatedPath string
+		if analysis != nil {
+			annotatedSGF, err = annotatedSGFForVariation(c, boardSize, path, analysis)
+			if err != nil {
+				return nil, err
+			}
+			annotatedPath = annotatedSGFPath(outputPath)
+		}
+
 		outputs = append(outputs, renderOutput{
-			path: variationOutputPath(opts.outputPath, path, len(paths)),
-			gif:  g,
+			path:    outputPath,
+			gif:     g,
+			sgfPath: annotatedPath,
+			sgfData: annotatedSGF,
 		})
 	}
 
@@ -894,6 +942,8 @@ func variationOutputPath(base string, path []int, total int) string {
 
 func katagoVisitsForStrength(value string) (int, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "mild":
+		return 50, nil
 	case "fast":
 		return 100, nil
 	case "strong":
@@ -903,7 +953,7 @@ func katagoVisitsForStrength(value string) (int, error) {
 	case "":
 		return 0, nil
 	default:
-		return 0, fmt.Errorf("katago-strength must be one of: fast, strong, monster")
+		return 0, fmt.Errorf("katago-strength must be one of: mild, fast, strong, monster")
 	}
 }
 
@@ -959,11 +1009,22 @@ func actionsToFrames(info *gameInfo, initial *boardState, actions []*action, cfg
 		return nil, err
 	}
 
-	ret := make([]*image.Paletted, 0, len(specs))
+	extraFrame := 0
+	if cfg.analysis != nil && cfg.analysis.summary != nil && len(specs) > 0 {
+		extraFrame = 1
+	}
+	ret := make([]*image.Paletted, 0, len(specs)+extraFrame)
 	for i, spec := range specs {
 		frameCfg := cfg
 		frameCfg.currentFrame = i
 		ret = append(ret, renderFrame(info, spec.state, spec.current, spec.moveNumber, spec.capturedThisMove, frameCfg))
+	}
+	if extraFrame == 1 {
+		last := specs[len(specs)-1]
+		frameCfg := cfg
+		frameCfg.currentFrame = len(specs) - 1
+		frameCfg.summaryFrame = true
+		ret = append(ret, renderFrame(info, last.state, last.current, last.moveNumber, last.capturedThisMove, frameCfg))
 	}
 	return ret, nil
 }
@@ -1052,6 +1113,8 @@ var palette = []color.Color{
 	color.RGBA{0x1D, 0x8F, 0x5A, 0xFF}, // analysis green
 	color.RGBA{0x8B, 0x8B, 0x8B, 0xFF}, // analysis gray
 	color.RGBA{0xD9, 0x7A, 0x0B, 0xFF}, // analysis orange
+	color.RGBA{0xF0, 0xC6, 0x37, 0xFF}, // analysis yellow
+	color.RGBA{0x9F, 0x1E, 0x1E, 0xFF}, // analysis red
 }
 
 const (
@@ -1064,6 +1127,8 @@ const (
 	analysisGreen
 	analysisGray
 	analysisOrange
+	analysisYellow
+	analysisRed
 )
 
 const (
@@ -1073,7 +1138,7 @@ const (
 	coordMargin       = 40
 	infoHeight        = 92
 	compactInfoHeight = 64
-	analysisHeight    = 148
+	analysisHeight    = 320
 	textPadding       = 8
 )
 
@@ -1296,8 +1361,9 @@ func renderFrame(info *gameInfo, state *boardState, current *action, moveNumber,
 		drawStoneMoveNumbersWithLayout(img, state, moveNumber, cfg.showMoveNumbers, cfg.recentMoves, layout)
 	}
 	drawBoardAnnotationsWithLayout(img, state, current, layout)
+	drawAnalysisDecisionArrows(img, state, current, cfg)
 	drawAnalysisRecommendations(img, state, cfg)
-	drawLastMoveMarkerWithLayout(img, current.move, layout)
+	drawLastMoveMarkerWithColorWithLayout(img, current.move, currentMoveHighlightColor(cfg), layout)
 	drawAnalysisPanel(img, cfg)
 
 	return img
@@ -1604,6 +1670,10 @@ func drawLastMoveMarker(img *image.Paletted, lastMove *move) {
 }
 
 func drawLastMoveMarkerWithLayout(img *image.Paletted, lastMove *move, layout renderLayout) {
+	drawLastMoveMarkerWithColorWithLayout(img, lastMove, highlight, layout)
+}
+
+func drawLastMoveMarkerWithColorWithLayout(img *image.Paletted, lastMove *move, colorIndex uint8, layout renderLayout) {
 	if lastMove == nil || lastMove.pass {
 		return
 	}
@@ -1616,7 +1686,7 @@ func drawLastMoveMarkerWithLayout(img *image.Paletted, lastMove *move, layout re
 		for py := y - outerRadius; py <= y+outerRadius; py++ {
 			d := dist(px, py, x, y)
 			if d <= outerRadius && d >= innerRadius {
-				img.SetColorIndex(px, py, highlight)
+				img.SetColorIndex(px, py, colorIndex)
 			}
 		}
 	}

@@ -74,15 +74,36 @@ and show KataGo's recommended next moves on the current board:
 $ sgf2gif --katago-analyze /tmp/foo.sgf /tmp/foo.gif
 ```
 
+With KataGo enabled, the GIF now also includes:
+
+- ghost-stone next-move recommendations on the board
+- `PLAYED` and `BEST` board labels, plus an arrow from the played move to the best move
+- a move-quality badge and gradient last-move highlight based on the winrate gap
+- a final summary frame with phase hit rates, move-quality comparison, verdict lines, and top blunders
+- a companion analyzed SGF saved as `*.katago.sgf` for cache-based rerenders
+
 You can switch the analysis panel between black and white perspective:
 
 ```
 $ sgf2gif --katago-analyze --katago-view white /tmp/foo.sgf /tmp/foo.gif
 ```
 
+You can control how many candidate moves are drawn on the board:
+
+```
+$ sgf2gif --katago-analyze --katago-top-moves 5 /tmp/foo.sgf /tmp/foo.gif
+```
+
+You can combine move numbers with KataGo overlays. This is often the most useful review mode:
+
+```
+$ sgf2gif --katago-strength mild --recent-move-numbers 20 /tmp/foo.sgf /tmp/foo.gif
+```
+
 You can use built-in strength presets:
 
 ```
+$ sgf2gif --katago-strength mild /tmp/foo.sgf /tmp/foo.gif
 $ sgf2gif --katago-strength fast /tmp/foo.sgf /tmp/foo.gif
 $ sgf2gif --katago-strength strong /tmp/foo.sgf /tmp/foo.gif
 $ sgf2gif --katago-strength monster /tmp/foo.sgf /tmp/foo.gif
@@ -90,6 +111,7 @@ $ sgf2gif --katago-strength monster /tmp/foo.sgf /tmp/foo.gif
 
 These presets map to:
 
+- `mild` = `50` visits
 - `fast` = `100` visits
 - `strong` = `1000` visits
 - `monster` = `10000` visits
@@ -108,13 +130,30 @@ When `--katago-analyze` is enabled:
 - KataGo startup and loading logs are streamed to the terminal.
 - Analysis progress is shown in the terminal with a live progress bar.
 - The analysis panel can show the current move, KataGo's best move, and the estimated point loss for the played move.
+- The analysis panel can also show the winrate gap, a quality label, and board-level `PLAYED` / `BEST` annotations.
+- The final frame summarizes phase-by-phase accuracy, average loss, largest swing, phase pressure, and top blunders.
+- An analyzed companion SGF is saved next to the GIF as `*.katago.sgf`.
+- Re-rendering an SGF that already contains cached KataGo data can draw the analysis again even without rerunning KataGo.
+
+For example, you can analyze once and rerender from cache later:
+
+```
+$ sgf2gif --katago-strength strong /tmp/foo.sgf /tmp/foo.gif
+$ sgf2gif /tmp/foo.katago.sgf /tmp/foo-rerender.gif
+```
+
+If you want a denser review pass with more candidate moves and more visits:
+
+```
+$ sgf2gif --katago-strength strong --katago-top-moves 5 --recent-move-numbers 30 /tmp/foo.sgf /tmp/foo.gif
+```
 
 Colab users can start from:
 
 - [notebooks/sgf2gif_katago_colab.ipynb](/Volumes/DataCenter_01/GitHub/sgf2gif/notebooks/sgf2gif_katago_colab.ipynb)
 - [Open In Colab](https://colab.research.google.com/github/rainoffallingstar/sgf2gif/blob/master/notebooks/sgf2gif_katago_colab.ipynb)
 
-The Colab notebook now starts with remote download smoke tests for OGS and Fox, then runs a `visit=1` KataGo analysis check on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), and finally lets you scale up to `fast`, `strong`, or `monster`.
+The Colab notebook now starts with remote download smoke tests for OGS and Fox, then runs a `mild` KataGo analysis check on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), and finally lets you scale up to `fast`, `strong`, or `monster`.
 It installs the official Go `1.26.1` toolchain directly, because Colab's default `golang-go` package is too old for this module.
 It is safe to rerun from the top, because the notebook switches back to `/content` before removing and recloning the repo.
 If your current Colab session is already stuck in a deleted repo directory, run `%cd /content` once before rerunning the first cell.

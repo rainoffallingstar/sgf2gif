@@ -48,18 +48,22 @@ type katagoEnvironment struct {
 }
 
 type analysisSeries struct {
-	frames []positionAnalysis
+	frames  []positionAnalysis
+	summary *analysisSummary
 }
 
 type positionAnalysis struct {
-	winrate    float64
-	scoreLead  float64
-	visits     int
-	topMoves   []analysisMove
-	playedMove string
-	bestMove   string
-	moveLoss   float64
-	lossKnown  bool
+	winrate       float64
+	scoreLead     float64
+	visits        int
+	topMoves      []analysisMove
+	playedMove    string
+	bestMove      string
+	moveLoss      float64
+	lossKnown     bool
+	bestWinrate   float64
+	actualWinrate float64
+	winrateGap    float64
 }
 
 type decisionQueryRef struct {
@@ -171,30 +175,10 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 	if err != nil {
 		return nil, err
 	}
-
-	for _, decision := range decisions {
-		resp, ok := results[decision.id()]
-		if !ok || decision.frameIndex < 0 || decision.frameIndex >= len(frames) || decision.move == nil {
-			continue
-		}
-		played := moveToGTP(decision.move, decision.before.size)
-		best := bestMoveByPlayer(resp.MoveInfos, decision.before.toPlay)
-		actual, ok := moveInfoByMove(resp.MoveInfos, played)
-		if !ok {
-			frames[decision.frameIndex].playedMove = played
-			frames[decision.frameIndex].bestMove = best.Move
-			continue
-		}
-
-		bestLead := moveScoreForPlayer(best, decision.before.toPlay)
-		actualLead := moveScoreForPlayer(actual, decision.before.toPlay)
-		frames[decision.frameIndex].playedMove = played
-		frames[decision.frameIndex].bestMove = best.Move
-		frames[decision.frameIndex].moveLoss = bestLead - actualLead
-		frames[decision.frameIndex].lossKnown = true
-	}
-
-	return &analysisSeries{frames: frames}, nil
+	applyDecisionAnalysis(frames, decisions, results)
+	series := &analysisSeries{frames: frames}
+	series.summary = buildAnalysisSummary(actions, series)
+	return series, nil
 }
 
 func populateAnalysisFrames(specs []frameSpec, results map[string]katagoAnalysisResponse, opts katagoOptions) ([]positionAnalysis, error) {
@@ -786,6 +770,46 @@ func moveScoreForPlayer(moveInfo katagoMoveInfo, toPlay uint8) float64 {
 		return -moveInfo.ScoreLead
 	}
 	return moveInfo.ScoreLead
+}
+
+func winrateForPlayer(blackWinrate float64, player uint8) float64 {
+	if player == white {
+		return 1 - blackWinrate
+	}
+	return blackWinrate
+}
+
+func rootScoreForPlayer(scoreLead float64, toPlay uint8) float64 {
+	if toPlay == white {
+		return -scoreLead
+	}
+	return scoreLead
+}
+
+func applyDecisionAnalysis(frames []positionAnalysis, decisions []decisionQueryRef, results map[string]katagoAnalysisResponse) {
+	for _, decision := range decisions {
+		resp, ok := results[decision.id()]
+		if !ok || decision.frameIndex < 0 || decision.frameIndex >= len(frames) || decision.move == nil {
+			continue
+		}
+		played := moveToGTP(decision.move, decision.before.size)
+		best := bestMoveByPlayer(resp.MoveInfos, decision.before.toPlay)
+		frames[decision.frameIndex].playedMove = played
+		frames[decision.frameIndex].bestMove = best.Move
+		if best.Move == "" {
+			continue
+		}
+
+		bestLead := moveScoreForPlayer(best, decision.before.toPlay)
+		actualLead := rootScoreForPlayer(frames[decision.frameIndex].scoreLead, decision.before.toPlay)
+		bestWinrate := winrateForPlayer(best.Winrate, decision.before.toPlay)
+		actualWinrate := winrateForPlayer(frames[decision.frameIndex].winrate, decision.before.toPlay)
+		frames[decision.frameIndex].moveLoss = bestLead - actualLead
+		frames[decision.frameIndex].bestWinrate = bestWinrate
+		frames[decision.frameIndex].actualWinrate = actualWinrate
+		frames[decision.frameIndex].winrateGap = bestWinrate - actualWinrate
+		frames[decision.frameIndex].lossKnown = true
+	}
 }
 
 func (d decisionQueryRef) id() string {

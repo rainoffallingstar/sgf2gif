@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"testing"
 )
@@ -119,6 +120,7 @@ func TestNormalizeKataGoView(t *testing.T) {
 
 func TestKataGoVisitsForStrength(t *testing.T) {
 	tests := map[string]int{
+		"mild":    50,
 		"fast":    100,
 		"strong":  1000,
 		"monster": 10000,
@@ -281,5 +283,49 @@ func TestPopulateAnalysisFramesIgnoresDecisionResponsesForFrameIndexing(t *testi
 	}
 	if frames[0].topMoves[0].move != "D4" {
 		t.Fatalf("top move = %q, want %q", frames[0].topMoves[0].move, "D4")
+	}
+}
+
+func TestRootScoreForPlayer(t *testing.T) {
+	if got := rootScoreForPlayer(3.5, black); got != 3.5 {
+		t.Fatalf("rootScoreForPlayer(3.5, black) = %v, want 3.5", got)
+	}
+	if got := rootScoreForPlayer(3.5, white); got != -3.5 {
+		t.Fatalf("rootScoreForPlayer(3.5, white) = %v, want -3.5", got)
+	}
+}
+
+func TestApplyDecisionAnalysisUsesFrameRootForActualMoveLoss(t *testing.T) {
+	frames := []positionAnalysis{
+		{scoreLead: 1.2},
+	}
+	decisions := []decisionQueryRef{
+		{
+			frameIndex: 0,
+			before:     newBoardState(9),
+			move:       &move{x: 0, y: 0},
+		},
+	}
+	results := map[string]katagoAnalysisResponse{
+		"decision-0000": {
+			MoveInfos: []katagoMoveInfo{
+				{Move: "D4", ScoreLead: 2.7, Visits: 100, Order: 0},
+			},
+		},
+	}
+
+	applyDecisionAnalysis(frames, decisions, results)
+
+	if frames[0].playedMove != "A9" {
+		t.Fatalf("playedMove = %q, want %q", frames[0].playedMove, "A9")
+	}
+	if frames[0].bestMove != "D4" {
+		t.Fatalf("bestMove = %q, want %q", frames[0].bestMove, "D4")
+	}
+	if !frames[0].lossKnown {
+		t.Fatal("lossKnown = false, want true")
+	}
+	if math.Abs(frames[0].moveLoss-1.5) > 1e-9 {
+		t.Fatalf("moveLoss = %v, want 1.5", frames[0].moveLoss)
 	}
 }

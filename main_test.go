@@ -92,6 +92,37 @@ func TestSgfToGifKeepsFullHeightWhenCommentsExist(t *testing.T) {
 	}
 }
 
+func TestActionsToFramesAppendsSummaryFrameWhenAnalysisExists(t *testing.T) {
+	initial := newBoardState(9)
+	actions := []*action{
+		{move: &move{x: 0, y: 0}},
+		{move: &move{white: true, x: 1, y: 1}},
+	}
+	cfg := renderConfig{
+		layout: renderLayout{infoHeight: compactInfoHeight, analysisHeight: analysisHeight},
+		analysis: &analysisSeries{
+			frames: []positionAnalysis{
+				{playedMove: "A9", bestMove: "B8", lossKnown: true, winrateGap: 0.02, topMoves: []analysisMove{{move: "B8", x: 1, y: 1}}},
+				{playedMove: "B8", bestMove: "C7", lossKnown: true, winrateGap: 0.04, topMoves: []analysisMove{{move: "C7", x: 2, y: 2}}},
+			},
+			summary: &analysisSummary{
+				phases: []phaseSummary{{label: "Opening"}},
+			},
+		},
+	}
+
+	frames, err := actionsToFrames(&gameInfo{}, initial, actions, cfg, positionalSuperkoRule)
+	if err != nil {
+		t.Fatalf("actionsToFrames returned error: %v", err)
+	}
+	if got, want := len(frames), 3; got != want {
+		t.Fatalf("frame count = %d, want %d", got, want)
+	}
+	if got, want := frames[len(frames)-1].Bounds().Dy(), compactInfoHeight+side(9)+2*coordMargin+analysisHeight; got != want {
+		t.Fatalf("summary frame height = %d, want %d", got, want)
+	}
+}
+
 func TestParseArgsAcceptsMoveNumbersFlag(t *testing.T) {
 	oldArgs := os.Args
 	defer func() {

@@ -16,17 +16,48 @@ func drawAnalysisRecommendations(img *image.Paletted, state *boardState, cfg ren
 	}
 
 	layout := cfg.layout.normalized()
-	labels := []string{"A", "B", "C", "D", "E"}
-	colors := []uint8{analysisBlue, analysisGreen, analysisOrange, analysisBlue, analysisGreen}
 	for i, move := range current.topMoves {
-		if move.pass || i >= len(labels) || !state.inBounds(move.x, move.y) || state.get(move.x, move.y) != background {
+		if move.pass || !state.inBounds(move.x, move.y) || state.get(move.x, move.y) != background {
 			continue
 		}
 		centerX := boardOriginX() + move.x*stoneDiameter
 		centerY := boardOriginYForLayout(layout) + move.y*stoneDiameter
-		drawCircleOutline(img, centerX, centerY, stoneDiameter/3, colors[i%len(colors)])
-		drawCenteredText(img, centerX, centerY+5, labels[i], color.Black)
+		label := recommendationLabel(move, state.toPlay)
+		colorIndex := recommendationColor(opponentWinrateForMove(move, state.toPlay))
+		radius := recommendationRadius(i)
+		drawGhostAura(img, centerX, centerY, radius+4, radius+10, colorIndex, i)
+		drawGhostStone(img, centerX, centerY, radius, colorIndex)
+		drawCircleOutline(img, centerX, centerY, radius-1, ghostOutlineColor(colorIndex))
+		drawFilledDot(img, centerX, centerY, maxInt(3, radius/5), ghostOutlineColor(colorIndex))
+		drawCenteredText(img, centerX, centerY+5, label, ghostLabelColor(colorIndex))
+		if i < 3 {
+			drawRecommendationRankBadge(img, centerX-radius+4, centerY-radius+8, i+1, colorIndex)
+		}
 	}
+}
+
+func drawAnalysisDecisionArrows(img *image.Paletted, state *boardState, current *action, cfg renderConfig) {
+	if current == nil || current.move == nil || current.move.pass || cfg.summaryFrame {
+		return
+	}
+	frame := cfg.analysis.frameAt(cfg.currentFrame)
+	if frame == nil || frame.bestMove == "" || frame.bestMove == frame.playedMove {
+		return
+	}
+	bestX, bestY, pass, err := parseGTPMove(frame.bestMove, state.size)
+	if err != nil || pass || !state.inBounds(bestX, bestY) {
+		return
+	}
+
+	layout := cfg.layout.normalized()
+	startX := boardOriginX() + current.move.x*stoneDiameter
+	startY := boardOriginYForLayout(layout) + current.move.y*stoneDiameter
+	endX := boardOriginX() + bestX*stoneDiameter
+	endY := boardOriginYForLayout(layout) + bestY*stoneDiameter
+
+	drawArrowLine(img, startX, startY, endX, endY, analysisBlue)
+	drawMoveTag(img, startX, startY, "PLAYED", currentMoveHighlightColor(cfg), current.move.x > state.size/2, true)
+	drawMoveTag(img, endX, endY, "BEST", analysisBlue, bestX > state.size/2, false)
 }
 
 func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
@@ -47,6 +78,11 @@ func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
 	fillRect(img, panelLeft+1, panelTop+3, panelRight-1, panelBottom-1, background)
 	drawRectOutline(img, panelLeft, panelTop+2, panelRight, panelBottom, gridLine)
 
+	if cfg.summaryFrame && cfg.analysis.summary != nil {
+		drawAnalysisSummaryPanel(img, panelLeft, panelTop, panelRight, panelBottom, cfg.analysis.summary)
+		return
+	}
+
 	statsText := fmt.Sprintf(
 		"KataGo | %s | WR %.1f%% | Score %s | Visits %d",
 		kataGoViewLabel(cfg.katagoView),
@@ -54,7 +90,8 @@ func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
 		formatScoreLead(current.displayScoreLead(cfg.katagoView), cfg.katagoView),
 		current.visits,
 	)
-	drawText(img, panelLeft+6, panelTop+18, fitText(statsText, panelRight-panelLeft-12), color.Black)
+	drawText(img, panelLeft+6, panelTop+18, fitText(statsText, panelRight-panelLeft-168), color.Black)
+	drawCurrentMoveQualityBadge(img, panelRight-154, panelTop+18, current)
 
 	detailText := formatMoveDetail(current)
 	if detailText != "" {
@@ -65,12 +102,13 @@ func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
 	if recommendText != "" {
 		drawText(img, panelLeft+6, panelTop+50, fitText(recommendText, panelRight-panelLeft-12), color.Black)
 	}
+	drawRecommendationLegend(img, panelRight-214, panelTop+50)
 
 	chartLeft := panelLeft + 6
 	chartWidth := panelRight - chartLeft - 6
-	winrateTop := panelTop + 62
-	scoreTop := panelTop + 114
-	chartHeight := 40
+	winrateTop := panelTop + 68
+	chartHeight := maxInt(46, (panelBottom-winrateTop-16)/2-10)
+	scoreTop := winrateTop + chartHeight + 24
 
 	drawTextWithColorIndex(img, chartLeft, winrateTop-4, "Winrate", analysisBlue)
 	drawLineChart(
@@ -204,7 +242,9 @@ func drawLineChart(img *image.Paletted, left, top, width, height int, values []f
 	}
 	smoothed := smoothChartPoints(points)
 	for i := 1; i < len(smoothed); i++ {
-		drawLine(img, smoothed[i-1].x, smoothed[i-1].y, smoothed[i].x, smoothed[i].y, lineColor)
+		p0 := clampPointToChart(smoothed[i-1], left+1, right-1, top+1, bottom-1)
+		p1 := clampPointToChart(smoothed[i], left+1, right-1, top+1, bottom-1)
+		drawLine(img, p0.x, p0.y, p1.x, p1.y, lineColor)
 	}
 
 	if currentIndex >= 0 && currentIndex < len(values) {
@@ -277,7 +317,7 @@ func recommendedMovesSummary(moves []analysisMove) string {
 		if !move.pass {
 			loc = move.move
 		}
-		parts = append(parts, labels[i]+":"+loc)
+		parts = append(parts, fmt.Sprintf("%s:%s %dvis", labels[i], loc, move.visits))
 	}
 	return "Next: " + strings.Join(parts, "  ")
 }
@@ -315,10 +355,356 @@ func formatMoveDetail(current *positionAnalysis) string {
 	}
 	if current.lossKnown {
 		parts = append(parts, fmt.Sprintf("Loss: %.1f pts", current.moveLoss))
-	} else if current.playedMove != "" {
-		parts = append(parts, "Loss: n/a")
+		parts = append(parts, fmt.Sprintf("WR gap: %.1fpp", current.winrateGap*100))
+		parts = append(parts, "Quality: "+qualityLabelForGap(current.winrateGap))
 	}
 	return strings.Join(parts, " | ")
+}
+
+func currentMoveHighlightColor(cfg renderConfig) uint8 {
+	current := cfg.analysis.frameAt(cfg.currentFrame)
+	if current == nil || !current.lossKnown {
+		return highlight
+	}
+	return gapColorIndex(current.winrateGap)
+}
+
+func gapColorIndex(gap float64) uint8 {
+	switch {
+	case gap < -0.01:
+		return analysisBlue
+	case gap <= 0.01:
+		return analysisGreen
+	case gap <= 0.03:
+		return analysisGreen
+	case gap <= 0.07:
+		return analysisYellow
+	case gap <= 0.12:
+		return analysisOrange
+	case gap <= 0.20:
+		return highlight
+	default:
+		return analysisRed
+	}
+}
+
+func opponentWinrateForMove(move analysisMove, nextPlayer uint8) float64 {
+	opponent := uint8(black)
+	if nextPlayer == black {
+		opponent = white
+	}
+	return winrateForPlayer(move.winrate, opponent)
+}
+
+func recommendationLabel(move analysisMove, nextPlayer uint8) string {
+	opponent := "B"
+	if nextPlayer == black {
+		opponent = "W"
+	}
+	return fmt.Sprintf("%s%.0f", opponent, opponentWinrateForMove(move, nextPlayer)*100)
+}
+
+func recommendationColor(opponentWinrate float64) uint8 {
+	switch {
+	case opponentWinrate < 0.35:
+		return analysisGreen
+	case opponentWinrate < 0.45:
+		return analysisBlue
+	case opponentWinrate < 0.55:
+		return analysisYellow
+	case opponentWinrate < 0.65:
+		return analysisOrange
+	default:
+		return analysisRed
+	}
+}
+
+func drawGhostStone(img *image.Paletted, centerX, centerY, radius int, colorIndex uint8) {
+	for x := centerX - radius; x <= centerX+radius; x++ {
+		for y := centerY - radius; y <= centerY+radius; y++ {
+			if dist(x, y, centerX, centerY) > radius {
+				continue
+			}
+			if dist(x, y, centerX, centerY) >= radius-1 || (x+y)%2 == 0 || dist(x, y, centerX, centerY) <= radius/3 {
+				img.SetColorIndex(x, y, colorIndex)
+			}
+		}
+	}
+}
+
+func drawGhostAura(img *image.Paletted, centerX, centerY, innerRadius, outerRadius int, colorIndex uint8, rank int) {
+	spacing := 3 + minInt(rank, 2)
+	for x := centerX - outerRadius; x <= centerX+outerRadius; x++ {
+		for y := centerY - outerRadius; y <= centerY+outerRadius; y++ {
+			d := dist(x, y, centerX, centerY)
+			if d < innerRadius || d > outerRadius {
+				continue
+			}
+			if (x+y+d)%spacing == 0 {
+				img.SetColorIndex(x, y, colorIndex)
+			}
+		}
+	}
+}
+
+func ghostOutlineColor(colorIndex uint8) uint8 {
+	if colorIndex == analysisYellow {
+		return black
+	}
+	return black
+}
+
+func ghostLabelColor(colorIndex uint8) color.Color {
+	switch colorIndex {
+	case analysisYellow:
+		return color.Black
+	default:
+		return color.White
+	}
+}
+
+func drawAnalysisSummaryPanel(img *image.Paletted, panelLeft, panelTop, panelRight, panelBottom int, summary *analysisSummary) {
+	drawText(img, panelLeft+6, panelTop+18, "Game Summary", color.Black)
+	drawText(img, panelLeft+6, panelTop+34, fmt.Sprintf("Top %d match rate by phase | Moves %d", maxInt(1, summary.topMoveCount), summary.totalMoves), color.Black)
+	drawTextWithColorIndex(img, panelRight-172, panelTop+34, "Blue: Black", analysisBlue)
+	drawTextWithColorIndex(img, panelRight-84, panelTop+34, "Orange: White", analysisOrange)
+	drawSummaryStatCard(img, panelLeft+6, panelTop+42, 160, "Avg loss", fmt.Sprintf("B %.1f  W %.1f", summary.blackLoss.average(), summary.whiteLoss.average()), analysisGreen)
+	drawSummaryStatCard(img, panelLeft+174, panelTop+42, 168, "Best hit streak", fmt.Sprintf("B %d  W %d", summary.blackHitStreak, summary.whiteHitStreak), analysisBlue)
+	drawSummaryStatCard(img, panelLeft+350, panelTop+42, 194, "Largest swing", biggestSwingSummary(summary), analysisRed)
+
+	phaseTop := panelTop + 68
+	phaseWidth := (panelRight - panelLeft - 24) / 3
+	for i, phase := range summary.phases {
+		left := panelLeft + 6 + i*(phaseWidth+6)
+		right := left + phaseWidth
+		drawRectOutline(img, left, phaseTop, right, phaseTop+52, gridLine)
+		drawText(img, left+6, phaseTop+16, phase.label, color.Black)
+		drawSummaryRateRow(img, left+6, phaseTop+32, right-left-12, "B", phase.black, analysisBlue)
+		drawSummaryRateRow(img, left+6, phaseTop+46, right-left-12, "W", phase.white, analysisOrange)
+	}
+
+	categoryTop := phaseTop + 66
+	drawText(img, panelLeft+6, categoryTop, "Move quality comparison", color.Black)
+	drawQualityScaleLegend(img, panelRight-274, categoryTop)
+	barLeft := panelLeft + 88
+	barRight := panelRight - 8
+	rowTop := categoryTop + 8
+	maxCount := maxInt(1, summary.maxCategoryCount())
+	for i, category := range summary.categories {
+		y := rowTop + i*13
+		drawText(img, panelLeft+6, y+9, category.label, color.Black)
+		drawDualComparisonBar(img, barLeft, y, barRight-barLeft, 8, category.black, category.white, maxCount)
+	}
+	drawSummaryFooter(img, panelLeft+6, panelBottom, panelRight-panelLeft-12, summary)
+}
+
+func drawSummaryRateRow(img *image.Paletted, left, baselineY, width int, label string, counter moveQualityCounter, colorIndex uint8) {
+	drawText(img, left, baselineY, label, color.Black)
+	barLeft := left + 14
+	barWidth := maxInt(24, width-68)
+	barTop := baselineY - 10
+	barBottom := barTop + 7
+	drawRectOutline(img, barLeft, barTop, barLeft+barWidth, barBottom, gridLine)
+	fillWidth := int(math.Round(counter.rate() * float64(barWidth-1)))
+	if fillWidth > 0 {
+		fillRect(img, barLeft+1, barTop+1, barLeft+fillWidth, barBottom-1, colorIndex)
+	}
+	drawText(img, barLeft+barWidth+6, baselineY, fmt.Sprintf("%.0f%% %s", counter.rate()*100, counter.label()), color.Black)
+}
+
+func drawDualComparisonBar(img *image.Paletted, left, top, width, height, blackCount, whiteCount, maxCount int) {
+	mid := left + width/2
+	half := width / 2
+	blackWidth := int(math.Round(float64(blackCount) / float64(maxCount) * float64(half-4)))
+	whiteWidth := int(math.Round(float64(whiteCount) / float64(maxCount) * float64(half-4)))
+	drawRectOutline(img, left, top, left+width, top+height, gridLine)
+	if blackWidth > 0 {
+		fillRect(img, mid-blackWidth, top+1, mid-1, top+height-1, analysisBlue)
+	}
+	if whiteWidth > 0 {
+		fillRect(img, mid+1, top+1, mid+whiteWidth, top+height-1, analysisOrange)
+	}
+	for y := top + 1; y < top+height; y++ {
+		img.SetColorIndex(mid, y, gridLine)
+	}
+	if blackCount > 0 {
+		drawText(img, left+2, top+8, strconv.Itoa(blackCount), color.White)
+	}
+	if whiteCount > 0 {
+		drawText(img, left+width-18, top+8, strconv.Itoa(whiteCount), color.Black)
+	}
+}
+
+func drawArrowLine(img *image.Paletted, x0, y0, x1, y1 int, colorIndex uint8) {
+	drawLine(img, x0, y0, x1, y1, colorIndex)
+	angle := math.Atan2(float64(y1-y0), float64(x1-x0))
+	headLen := 10.0
+	leftX := x1 - int(math.Round(headLen*math.Cos(angle-math.Pi/7)))
+	leftY := y1 - int(math.Round(headLen*math.Sin(angle-math.Pi/7)))
+	rightX := x1 - int(math.Round(headLen*math.Cos(angle+math.Pi/7)))
+	rightY := y1 - int(math.Round(headLen*math.Sin(angle+math.Pi/7)))
+	drawLine(img, x1, y1, leftX, leftY, colorIndex)
+	drawLine(img, x1, y1, rightX, rightY, colorIndex)
+}
+
+func drawRecommendationLegend(img *image.Paletted, left, baselineY int) {
+	drawTextWithColorIndex(img, left, baselineY, "Green", analysisGreen)
+	drawText(img, left+34, baselineY, "low opp WR", color.Black)
+	drawTextWithColorIndex(img, left+106, baselineY, "Red", analysisRed)
+	drawText(img, left+128, baselineY, "high opp WR", color.Black)
+}
+
+func drawCurrentMoveQualityBadge(img *image.Paletted, left, baselineY int, current *positionAnalysis) {
+	if current == nil || !current.lossKnown {
+		return
+	}
+	label := qualityLabelForGap(current.winrateGap)
+	colorIndex := gapColorIndex(current.winrateGap)
+	width := 132
+	top := baselineY - 12
+	bottom := top + 14
+	drawRectOutline(img, left, top, left+width, bottom, colorIndex)
+	fillRect(img, left+1, top+1, left+14, bottom-1, colorIndex)
+	drawTextWithColorIndex(img, left+20, baselineY, label, colorIndex)
+}
+
+func drawMoveTag(img *image.Paletted, centerX, centerY int, text string, colorIndex uint8, alignLeft, below bool) {
+	width := measureTextWidth(text) + 10
+	left := centerX + 10
+	if alignLeft {
+		left = centerX - width - 10
+	}
+	top := centerY - 16
+	if below {
+		top = centerY + 6
+	}
+	bottom := top + 14
+	drawRectOutline(img, left, top, left+width, bottom, colorIndex)
+	fillRect(img, left+1, top+1, left+width-1, bottom-1, background)
+	drawTextWithColorIndex(img, left+5, top+11, text, colorIndex)
+}
+
+func drawRecommendationRankBadge(img *image.Paletted, centerX, centerY, rank int, colorIndex uint8) {
+	drawFilledDot(img, centerX, centerY, 7, ghostOutlineColor(colorIndex))
+	drawCenteredText(img, centerX, centerY+4, strconv.Itoa(rank), color.White)
+}
+
+func recommendationRadius(rank int) int {
+	base := stoneDiameter/2 - 2
+	switch rank {
+	case 0:
+		return base
+	case 1:
+		return base - 3
+	case 2:
+		return base - 5
+	default:
+		return maxInt(12, base-6-rank)
+	}
+}
+
+func drawQualityScaleLegend(img *image.Paletted, left, baselineY int) {
+	items := []struct {
+		label      string
+		colorIndex uint8
+	}{
+		{label: "Brilliant", colorIndex: analysisBlue},
+		{label: "Good", colorIndex: analysisGreen},
+		{label: "OK", colorIndex: analysisYellow},
+		{label: "Mistake", colorIndex: analysisOrange},
+		{label: "Blunder", colorIndex: analysisRed},
+	}
+	x := left
+	for _, item := range items {
+		fillRect(img, x, baselineY-8, x+6, baselineY-2, item.colorIndex)
+		drawText(img, x+10, baselineY, item.label, color.Black)
+		x += 10 + measureTextWidth(item.label) + 12
+	}
+}
+
+func drawSummaryStatCard(img *image.Paletted, left, top, width int, title, value string, colorIndex uint8) {
+	bottom := top + 18
+	drawRectOutline(img, left, top, left+width, bottom, gridLine)
+	fillRect(img, left+1, top+1, left+4, bottom-1, colorIndex)
+	drawText(img, left+9, top+11, title, color.Black)
+	drawTextWithColorIndex(img, left+70, top+11, fitText(value, width-76), colorIndex)
+}
+
+func drawSummaryFooter(img *image.Paletted, left, panelBottom, maxWidth int, summary *analysisSummary) {
+	y := panelBottom - 62
+	drawWrappedText(img, left, y, maxWidth, 1, verdictForSide(summary, false), color.Black)
+	y += 14
+	drawWrappedText(img, left, y, maxWidth, 1, verdictForSide(summary, true), color.Black)
+	y += 14
+	drawWrappedText(img, left, y, maxWidth, 1, phasePressureVerdict(summary), color.Black)
+	y += 14
+	drawWrappedText(img, left, y, maxWidth, 2, topBlundersSummary(summary), color.Black)
+}
+
+func worstMoveSummary(summary *analysisSummary) string {
+	bestSide := "B"
+	best := summary.worstBlack
+	if summary.worstWhite.valid && (!best.valid || summary.worstWhite.gap > best.gap) {
+		bestSide = "W"
+		best = summary.worstWhite
+	}
+	if !best.valid {
+		return "n/a"
+	}
+	moveText := best.move
+	if moveText == "" {
+		moveText = "?"
+	}
+	return fmt.Sprintf("%s%d %s %.1fpt", bestSide, best.moveNumber, moveText, best.loss)
+}
+
+func biggestSwingSummary(summary *analysisSummary) string {
+	if !summary.biggestSwing.valid {
+		return "n/a"
+	}
+	side := "B"
+	if summary.biggestSwing.white {
+		side = "W"
+	}
+	moveText := summary.biggestSwing.move
+	if moveText == "" {
+		moveText = "?"
+	}
+	return fmt.Sprintf("%s%d %s %.1fpt", side, summary.biggestSwing.moveNumber, moveText, summary.biggestSwing.loss)
+}
+
+func topBlundersSummary(summary *analysisSummary) string {
+	if summary == nil || len(summary.topBlunders) == 0 {
+		return "Top blunders: n/a"
+	}
+	parts := make([]string, 0, len(summary.topBlunders))
+	for _, item := range summary.topBlunders {
+		side := "B"
+		if item.white {
+			side = "W"
+		}
+		moveText := item.move
+		if moveText == "" {
+			moveText = "?"
+		}
+		parts = append(parts, fmt.Sprintf("%s%d %s %.1fpt", side, item.moveNumber, moveText, item.loss))
+	}
+	return "Top blunders: " + strings.Join(parts, " | ")
+}
+
+func bestPhaseSummary(summary *analysisSummary) string {
+	return fmt.Sprintf(
+		"Best phase: B %s | W %s",
+		formatPhaseSnapshot(summary.bestBlackPhase),
+		formatPhaseSnapshot(summary.bestWhitePhase),
+	)
+}
+
+func formatPhaseSnapshot(snapshot phaseSnapshot) string {
+	if !snapshot.valid {
+		return "n/a"
+	}
+	return fmt.Sprintf("%s %.0f%%", snapshot.label, snapshot.rate*100)
 }
 
 func smoothChartPoints(points []point) []point {
@@ -361,4 +747,20 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func clampPointToChart(p point, minX, maxX, minY, maxY int) point {
+	if p.x < minX {
+		p.x = minX
+	}
+	if p.x > maxX {
+		p.x = maxX
+	}
+	if p.y < minY {
+		p.y = minY
+	}
+	if p.y > maxY {
+		p.y = maxY
+	}
+	return p
 }
