@@ -81,6 +81,7 @@ Colab users can start from:
 
 The lightweight KataGo smoke test now lives in Colab rather than GitHub Actions. The notebook starts with a `visit=1` analysis run on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), then you can scale up to `fast`, `strong`, or `monster`.
 It installs the official Go `1.26.1` toolchain directly, because Colab's default `golang-go` package is too old for this module.
+It is safe to rerun from the top, because the notebook switches back to `/content` before removing and recloning the repo.
 
 The resulting gif is shown below.
 
