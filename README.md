@@ -48,6 +48,12 @@ and show KataGo's recommended next moves on the current board:
 $ sgf2gif --katago-analyze /tmp/foo.sgf /tmp/foo.gif
 ```
 
+You can switch the analysis panel between black and white perspective:
+
+```
+$ sgf2gif --katago-analyze --katago-view white /tmp/foo.sgf /tmp/foo.gif
+```
+
 You can use built-in strength presets:
 
 ```
@@ -73,6 +79,9 @@ When `--katago-analyze` is enabled:
 - On Linux and Windows, if KataGo is missing, `sgf2gif` will download the latest official KataGo release automatically.
 - On macOS, if KataGo is missing, `sgf2gif` will prompt you to install it with `brew install katago`.
 - If the KataGo model or analysis config are missing, `sgf2gif` will download the latest official model and config files automatically into `./katago/`.
+- KataGo startup and loading logs are streamed to the terminal.
+- Analysis progress is shown in the terminal with a live progress bar.
+- The analysis panel can show the current move, KataGo's best move, and the estimated point loss for the played move.
 
 Colab users can start from:
 
@@ -89,6 +98,4 @@ The resulting gif is shown below.
 ![AlpahGo vs. Lee Sedol 2016-03-15](https://user-images.githubusercontent.com/9169414/33006598-3c0b2106-cdcb-11e7-94d0-d6db14675d71.gif)
 
 # Limitations
-Only the main line is rendered when the SGF contains variations.
-Dead stones are not removed from the board.
 Rectangular boards are not supported.

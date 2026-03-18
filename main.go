@@ -32,6 +32,7 @@ type options struct {
 	katagoModel     string
 	katagoConfig    string
 	katagoStrength  string
+	katagoView      string
 	katagoVisits    int
 	katagoThreads   int
 	katagoTopMoves  int
@@ -44,6 +45,7 @@ type renderConfig struct {
 	layout          renderLayout
 	analysis        *analysisSeries
 	currentFrame    int
+	katagoView      string
 }
 
 type renderLayout struct {
@@ -86,6 +88,7 @@ func parseArgs() (*options, error) {
 	katagoModel := fs.String("katago-model", "", "path to the KataGo model (.bin.gz)")
 	katagoConfig := fs.String("katago-config", "", "path to the KataGo analysis config (.cfg)")
 	katagoStrength := fs.String("katago-strength", "", "KataGo strength preset: fast, strong, or monster")
+	katagoView := fs.String("katago-view", "black", "KataGo display perspective: black or white")
 	katagoVisits := fs.Int("katago-visits", 200, "maximum KataGo visits per rendered position")
 	katagoThreads := fs.Int("katago-threads", 2, "number of KataGo analysis threads")
 	katagoTopMoves := fs.Int("katago-top-moves", 3, "number of KataGo candidate moves to display on the board")
@@ -112,6 +115,10 @@ func parseArgs() (*options, error) {
 	if *katagoTopMoves < 0 {
 		return nil, fmt.Errorf("katago-top-moves must be non-negative")
 	}
+	resolvedView, err := normalizeKataGoView(*katagoView)
+	if err != nil {
+		return nil, err
+	}
 
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) {
@@ -134,6 +141,7 @@ func parseArgs() (*options, error) {
 		visited["katago-model"] ||
 		visited["katago-config"] ||
 		visited["katago-strength"] ||
+		visited["katago-view"] ||
 		visited["katago-visits"] ||
 		visited["katago-threads"] ||
 		visited["katago-top-moves"]
@@ -155,6 +163,7 @@ func parseArgs() (*options, error) {
 		katagoModel:     *katagoModel,
 		katagoConfig:    *katagoConfig,
 		katagoStrength:  resolvedStrength,
+		katagoView:      resolvedView,
 		katagoVisits:    *katagoVisits,
 		katagoThreads:   *katagoThreads,
 		katagoTopMoves:  *katagoTopMoves,
@@ -179,7 +188,7 @@ func save(path string, g *gif.GIF) (err error) {
 }
 
 func usage() {
-	log.Printf("usage: %s [--move-numbers] [--recent-move-numbers N] [--variation-path 2,1,...] [--all-variations] [--katago-analyze] [--katago-bin PATH] [--katago-model PATH] [--katago-config PATH] [--katago-strength fast|strong|monster] [--katago-visits N] [--katago-threads N] [--katago-top-moves N] input_sgf_file output_gif_file\n", os.Args[0])
+	log.Printf("usage: %s [--move-numbers] [--recent-move-numbers N] [--variation-path 2,1,...] [--all-variations] [--katago-analyze] [--katago-bin PATH] [--katago-model PATH] [--katago-config PATH] [--katago-strength fast|strong|monster] [--katago-view black|white] [--katago-visits N] [--katago-threads N] [--katago-top-moves N] input_sgf_file output_gif_file\n", os.Args[0])
 }
 
 type renderOutput struct {
@@ -255,6 +264,7 @@ func sgfToGifs(opts *options) ([]renderOutput, error) {
 			variationLabel:  variationLabel(path),
 			layout:          selectRenderLayout(actions, analysis != nil),
 			analysis:        analysis,
+			katagoView:      opts.katagoView,
 		}
 
 		frames, err := actionsToFrames(info, initial, actions, cfg, koRule)
@@ -851,6 +861,17 @@ func katagoVisitsForStrength(value string) (int, error) {
 	}
 }
 
+func normalizeKataGoView(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "black":
+		return "black", nil
+	case "white":
+		return "white", nil
+	default:
+		return "", fmt.Errorf("katago-view must be one of: black, white")
+	}
+}
+
 func parseBoardSize(value string) (int, error) {
 	if strings.Contains(value, ":") {
 		parts := strings.SplitN(value, ":", 2)
@@ -903,6 +924,7 @@ func actionsToFrames(info *gameInfo, initial *boardState, actions []*action, cfg
 
 type frameSpec struct {
 	state            *boardState
+	beforeMoveState  *boardState
 	current          *action
 	moveNumber       int
 	capturedThisMove int
@@ -945,6 +967,7 @@ func actionsToFrameSpecs(initial *boardState, actions []*action, rule koRule) ([
 		if a.moveNumber > 0 {
 			currentMoveNumber = a.moveNumber
 		}
+		beforeMoveState := state.clone()
 
 		captured, err := state.applyMove(a.move, history, currentMoveNumber, rule)
 		if err != nil {
@@ -955,6 +978,7 @@ func actionsToFrameSpecs(initial *boardState, actions []*action, rule koRule) ([
 		history = append(history, state.hash())
 		ret = append(ret, frameSpec{
 			state:            state.clone(),
+			beforeMoveState:  beforeMoveState,
 			current:          a,
 			moveNumber:       moveNumber,
 			capturedThisMove: captured,

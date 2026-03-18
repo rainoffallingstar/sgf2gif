@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -51,10 +52,20 @@ type analysisSeries struct {
 }
 
 type positionAnalysis struct {
-	winrate   float64
-	scoreLead float64
-	visits    int
-	topMoves  []analysisMove
+	winrate    float64
+	scoreLead  float64
+	visits     int
+	topMoves   []analysisMove
+	playedMove string
+	bestMove   string
+	moveLoss   float64
+	lossKnown  bool
+}
+
+type decisionQueryRef struct {
+	frameIndex int
+	before     *boardState
+	move       *move
 }
 
 type analysisMove struct {
@@ -150,7 +161,7 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 		return nil, err
 	}
 
-	queries := buildKataGoQueries(info, specs, opts.maxVisits)
+	queries, decisions := buildKataGoQueries(info, specs, opts.maxVisits)
 	results, err := runKataGoAnalysis(env, queries, opts)
 	if err != nil {
 		return nil, err
@@ -199,11 +210,34 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 		}
 	}
 
+	for _, decision := range decisions {
+		resp, ok := results[decision.id()]
+		if !ok || decision.frameIndex < 0 || decision.frameIndex >= len(frames) || decision.move == nil {
+			continue
+		}
+		played := moveToGTP(decision.move, decision.before.size)
+		best := bestMoveByPlayer(resp.MoveInfos, decision.before.toPlay)
+		actual, ok := moveInfoByMove(resp.MoveInfos, played)
+		if !ok {
+			frames[decision.frameIndex].playedMove = played
+			frames[decision.frameIndex].bestMove = best.Move
+			continue
+		}
+
+		bestLead := moveScoreForPlayer(best, decision.before.toPlay)
+		actualLead := moveScoreForPlayer(actual, decision.before.toPlay)
+		frames[decision.frameIndex].playedMove = played
+		frames[decision.frameIndex].bestMove = best.Move
+		frames[decision.frameIndex].moveLoss = bestLead - actualLead
+		frames[decision.frameIndex].lossKnown = true
+	}
+
 	return &analysisSeries{frames: frames}, nil
 }
 
-func buildKataGoQueries(info *gameInfo, specs []frameSpec, maxVisits int) []katagoAnalysisQuery {
+func buildKataGoQueries(info *gameInfo, specs []frameSpec, maxVisits int) ([]katagoAnalysisQuery, []decisionQueryRef) {
 	queries := make([]katagoAnalysisQuery, 0, len(specs))
+	decisions := make([]decisionQueryRef, 0, len(specs))
 	rules := normalizeKataGoRules(info.rules)
 	komi := parseKomiValue(info.komi)
 	for i, spec := range specs {
@@ -220,8 +254,28 @@ func buildKataGoQueries(info *gameInfo, specs []frameSpec, maxVisits int) []kata
 			MaxVisits:     maxVisits,
 		}
 		queries = append(queries, query)
+
+		if spec.beforeMoveState != nil && spec.current != nil && spec.current.move != nil {
+			queries = append(queries, katagoAnalysisQuery{
+				ID:            fmt.Sprintf("decision-%04d", i),
+				InitialStones: spec.beforeMoveState.kataGoInitialStones(),
+				InitialPlayer: playerColorCode(spec.beforeMoveState.toPlay),
+				Rules:         rules,
+				Komi:          komi,
+				BoardXSize:    spec.beforeMoveState.size,
+				BoardYSize:    spec.beforeMoveState.size,
+				Moves:         [][]string{},
+				AnalyzeTurns:  []int{0},
+				MaxVisits:     maxVisits,
+			})
+			decisions = append(decisions, decisionQueryRef{
+				frameIndex: i,
+				before:     spec.beforeMoveState,
+				move:       spec.current.move,
+			})
+		}
 	}
-	return queries
+	return queries, decisions
 }
 
 func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opts katagoOptions) (map[string]katagoAnalysisResponse, error) {
@@ -252,9 +306,15 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 
 	errCh := make(chan error, 2)
 	go func() {
-		_, readErr := io.Copy(&stderrBuf, stderr)
+		_, readErr := io.Copy(io.MultiWriter(&stderrBuf, os.Stderr), stderr)
 		errCh <- readErr
 	}()
+
+	total := len(queries)
+	completed := 0
+	if total > 0 {
+		printAnalysisProgress(completed, total)
+	}
 
 	responses := map[string]katagoAnalysisResponse{}
 	go func() {
@@ -278,6 +338,8 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 				return
 			}
 			responses[resp.ID] = resp
+			completed++
+			printAnalysisProgress(completed, total)
 		}
 		errCh <- scanner.Err()
 	}()
@@ -309,6 +371,9 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 	if waitErr != nil {
 		return nil, fmt.Errorf("katago exited with error: %w\n%s", waitErr, strings.TrimSpace(stderrBuf.String()))
 	}
+	if total > 0 {
+		fmt.Fprintln(os.Stdout)
+	}
 	if len(responses) == 0 {
 		message := strings.TrimSpace(stderrBuf.String())
 		if message == "" {
@@ -318,6 +383,23 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 	}
 
 	return responses, nil
+}
+
+func printAnalysisProgress(done, total int) {
+	if total <= 0 {
+		return
+	}
+	pct := 100 * float64(done) / float64(total)
+	const barWidth = 24
+	filled := int(math.Round(float64(done) / float64(total) * barWidth))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > barWidth {
+		filled = barWidth
+	}
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", barWidth-filled)
+	fmt.Fprintf(os.Stdout, "\rKataGo analysis progress: [%s] %d/%d (%.1f%%)", bar, done, total, pct)
 }
 
 func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
@@ -654,8 +736,52 @@ func (b *boardState) kataGoInitialStones() [][]string {
 	return ret
 }
 
+func moveToGTP(m *move, boardSize int) string {
+	if m == nil || m.pass {
+		return "PASS"
+	}
+	return toGTPMove(m.x, m.y, boardSize)
+}
+
 func toGTPMove(x, y, boardSize int) string {
 	return fmt.Sprintf("%s%d", columnLabel(x), boardLabelY(y, boardSize))
+}
+
+func moveInfoByMove(moveInfos []katagoMoveInfo, move string) (katagoMoveInfo, bool) {
+	move = strings.ToUpper(strings.TrimSpace(move))
+	for _, moveInfo := range moveInfos {
+		if strings.ToUpper(strings.TrimSpace(moveInfo.Move)) == move {
+			return moveInfo, true
+		}
+	}
+	return katagoMoveInfo{}, false
+}
+
+func bestMoveByPlayer(moveInfos []katagoMoveInfo, toPlay uint8) katagoMoveInfo {
+	if len(moveInfos) == 0 {
+		return katagoMoveInfo{}
+	}
+	best := moveInfos[0]
+	bestScore := moveScoreForPlayer(best, toPlay)
+	for _, moveInfo := range moveInfos[1:] {
+		score := moveScoreForPlayer(moveInfo, toPlay)
+		if score > bestScore || (score == bestScore && moveInfo.Visits > best.Visits) {
+			best = moveInfo
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func moveScoreForPlayer(moveInfo katagoMoveInfo, toPlay uint8) float64 {
+	if toPlay == white {
+		return -moveInfo.ScoreLead
+	}
+	return moveInfo.ScoreLead
+}
+
+func (d decisionQueryRef) id() string {
+	return fmt.Sprintf("decision-%04d", d.frameIndex)
 }
 
 func parseGTPMove(value string, boardSize int) (int, int, bool, error) {
