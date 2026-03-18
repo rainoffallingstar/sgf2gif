@@ -41,6 +41,32 @@ $ sgf2gif --all-variations /tmp/foo.sgf /tmp/foo.gif
 
 This writes files like `/tmp/foo.var-main.gif` and `/tmp/foo.var-2-1.gif`.
 
+You can also render directly from remote game sources without saving the SGF first:
+
+```
+$ sgf2gif https://online-go.com/game/85130272 /tmp/foo.gif
+$ sgf2gif https://www.foxwq.com/qipu/newlist/id/2026031862241631.html /tmp/foo.gif
+```
+
+To download a single remote SGF instead of rendering a GIF:
+
+```
+$ sgf2gif --download-sgf ogs:85130272 /tmp/game.sgf
+$ sgf2gif --download-sgf https://www.foxwq.com/qipu/newlist/id/2026031862241631.html /tmp/game.sgf
+```
+
+To batch-download recent OGS games for a user into a directory:
+
+```
+$ sgf2gif --download-sgf --download-limit 20 ogs-user:rainoffallingstar1234 /tmp/ogs-games
+```
+
+If a source requires login, you can put a raw `Cookie` header value into a file and pass it with:
+
+```
+$ sgf2gif --download-sgf --download-cookie-file /tmp/cookie.txt ogs-user:rainoffallingstar1234 /tmp/ogs-games
+```
+
 To analyze each rendered position with KataGo, add winrate and score-lead curves,
 and show KataGo's recommended next moves on the current board:
 
@@ -88,7 +114,7 @@ Colab users can start from:
 - [notebooks/sgf2gif_katago_colab.ipynb](/Volumes/DataCenter_01/GitHub/sgf2gif/notebooks/sgf2gif_katago_colab.ipynb)
 - [Open In Colab](https://colab.research.google.com/github/rainoffallingstar/sgf2gif/blob/master/notebooks/sgf2gif_katago_colab.ipynb)
 
-The lightweight KataGo smoke test now lives in Colab rather than GitHub Actions. The notebook starts with a `visit=1` analysis run on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), then you can scale up to `fast`, `strong`, or `monster`.
+The Colab notebook now starts with remote download smoke tests for OGS and Fox, then runs a `visit=1` KataGo analysis check on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), and finally lets you scale up to `fast`, `strong`, or `monster`.
 It installs the official Go `1.26.1` toolchain directly, because Colab's default `golang-go` package is too old for this module.
 It is safe to rerun from the top, because the notebook switches back to `/content` before removing and recloning the repo.
 If your current Colab session is already stuck in a deleted repo directory, run `%cd /content` once before rerunning the first cell.
@@ -99,3 +125,4 @@ The resulting gif is shown below.
 
 # Limitations
 Rectangular boards are not supported.
+Fox support currently targets public qipu pages or URLs that are accessible with the cookie you provide.

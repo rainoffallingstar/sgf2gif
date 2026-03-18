@@ -236,3 +236,50 @@ func TestBuildKataGoQueriesAddsDecisionQueriesForPlayedMoves(t *testing.T) {
 		t.Fatalf("second decision toPlay = %v, want white", decisions[1].before.toPlay)
 	}
 }
+
+func TestPopulateAnalysisFramesIgnoresDecisionResponsesForFrameIndexing(t *testing.T) {
+	specs := []frameSpec{
+		{state: newBoardState(9)},
+	}
+	results := map[string]katagoAnalysisResponse{
+		frameQueryID(0): {
+			ID: frameQueryID(0),
+			RootInfo: katagoRootInfo{
+				Winrate:   0.61,
+				ScoreLead: 2.5,
+				Visits:    100,
+			},
+			MoveInfos: []katagoMoveInfo{
+				{Move: "D4", Visits: 90, Order: 0, Winrate: 0.61, ScoreLead: 2.5},
+			},
+		},
+		"decision-0000": {
+			ID: "decision-0000",
+			RootInfo: katagoRootInfo{
+				Winrate:   0.55,
+				ScoreLead: 1.0,
+				Visits:    100,
+			},
+			MoveInfos: []katagoMoveInfo{
+				{Move: "E5", Visits: 80, Order: 0, Winrate: 0.55, ScoreLead: 1.0},
+			},
+		},
+	}
+
+	frames, err := populateAnalysisFrames(specs, results, katagoOptions{topMoves: 3})
+	if err != nil {
+		t.Fatalf("populateAnalysisFrames returned error: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1", len(frames))
+	}
+	if frames[0].visits != 100 {
+		t.Fatalf("visits = %d, want 100", frames[0].visits)
+	}
+	if len(frames[0].topMoves) != 1 {
+		t.Fatalf("got %d top moves, want 1", len(frames[0].topMoves))
+	}
+	if frames[0].topMoves[0].move != "D4" {
+		t.Fatalf("top move = %q, want %q", frames[0].topMoves[0].move, "D4")
+	}
+}

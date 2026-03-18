@@ -167,47 +167,9 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 		return nil, err
 	}
 
-	frames := make([]positionAnalysis, len(specs))
-	for i, query := range queries {
-		result, ok := results[query.ID]
-		if !ok {
-			return nil, fmt.Errorf("missing KataGo response for %s", query.ID)
-		}
-
-		topMoves := make([]analysisMove, 0, len(result.MoveInfos))
-		moveInfos := append([]katagoMoveInfo(nil), result.MoveInfos...)
-		sort.SliceStable(moveInfos, func(i, j int) bool {
-			if moveInfos[i].Order == moveInfos[j].Order {
-				return moveInfos[i].Visits > moveInfos[j].Visits
-			}
-			return moveInfos[i].Order < moveInfos[j].Order
-		})
-		for _, moveInfo := range moveInfos {
-			if opts.topMoves > 0 && len(topMoves) >= opts.topMoves {
-				break
-			}
-			x, y, pass, err := parseGTPMove(moveInfo.Move, specs[i].state.size)
-			if err != nil {
-				continue
-			}
-			topMoves = append(topMoves, analysisMove{
-				move:      moveInfo.Move,
-				x:         x,
-				y:         y,
-				pass:      pass,
-				visits:    moveInfo.Visits,
-				order:     moveInfo.Order,
-				winrate:   moveInfo.Winrate,
-				scoreLead: moveInfo.ScoreLead,
-			})
-		}
-
-		frames[i] = positionAnalysis{
-			winrate:   result.RootInfo.Winrate,
-			scoreLead: result.RootInfo.ScoreLead,
-			visits:    result.RootInfo.Visits,
-			topMoves:  topMoves,
-		}
+	frames, err := populateAnalysisFrames(specs, results, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	for _, decision := range decisions {
@@ -235,6 +197,52 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 	return &analysisSeries{frames: frames}, nil
 }
 
+func populateAnalysisFrames(specs []frameSpec, results map[string]katagoAnalysisResponse, opts katagoOptions) ([]positionAnalysis, error) {
+	frames := make([]positionAnalysis, len(specs))
+	for i, spec := range specs {
+		result, ok := results[frameQueryID(i)]
+		if !ok {
+			return nil, fmt.Errorf("missing KataGo response for %s", frameQueryID(i))
+		}
+
+		topMoves := make([]analysisMove, 0, len(result.MoveInfos))
+		moveInfos := append([]katagoMoveInfo(nil), result.MoveInfos...)
+		sort.SliceStable(moveInfos, func(i, j int) bool {
+			if moveInfos[i].Order == moveInfos[j].Order {
+				return moveInfos[i].Visits > moveInfos[j].Visits
+			}
+			return moveInfos[i].Order < moveInfos[j].Order
+		})
+		for _, moveInfo := range moveInfos {
+			if opts.topMoves > 0 && len(topMoves) >= opts.topMoves {
+				break
+			}
+			x, y, pass, err := parseGTPMove(moveInfo.Move, spec.state.size)
+			if err != nil {
+				continue
+			}
+			topMoves = append(topMoves, analysisMove{
+				move:      moveInfo.Move,
+				x:         x,
+				y:         y,
+				pass:      pass,
+				visits:    moveInfo.Visits,
+				order:     moveInfo.Order,
+				winrate:   moveInfo.Winrate,
+				scoreLead: moveInfo.ScoreLead,
+			})
+		}
+
+		frames[i] = positionAnalysis{
+			winrate:   result.RootInfo.Winrate,
+			scoreLead: result.RootInfo.ScoreLead,
+			visits:    result.RootInfo.Visits,
+			topMoves:  topMoves,
+		}
+	}
+	return frames, nil
+}
+
 func buildKataGoQueries(info *gameInfo, specs []frameSpec, maxVisits int) ([]katagoAnalysisQuery, []decisionQueryRef) {
 	queries := make([]katagoAnalysisQuery, 0, len(specs))
 	decisions := make([]decisionQueryRef, 0, len(specs))
@@ -242,7 +250,7 @@ func buildKataGoQueries(info *gameInfo, specs []frameSpec, maxVisits int) ([]kat
 	komi := parseKomiValue(info.komi)
 	for i, spec := range specs {
 		query := katagoAnalysisQuery{
-			ID:            fmt.Sprintf("frame-%04d", i),
+			ID:            frameQueryID(i),
 			InitialStones: spec.state.kataGoInitialStones(),
 			InitialPlayer: playerColorCode(spec.state.toPlay),
 			Rules:         rules,
@@ -782,6 +790,10 @@ func moveScoreForPlayer(moveInfo katagoMoveInfo, toPlay uint8) float64 {
 
 func (d decisionQueryRef) id() string {
 	return fmt.Sprintf("decision-%04d", d.frameIndex)
+}
+
+func frameQueryID(frameIndex int) string {
+	return fmt.Sprintf("frame-%04d", frameIndex)
 }
 
 func parseGTPMove(value string, boardSize int) (int, int, bool, error) {

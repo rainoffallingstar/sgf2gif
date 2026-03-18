@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,9 @@ import (
 type options struct {
 	inputPath       string
 	outputPath      string
+	downloadSGF     bool
+	downloadLimit   int
+	downloadCookie  string
 	showMoveNumbers bool
 	recentMoves     int
 	variationPath   []int
@@ -62,6 +66,19 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if opts.downloadSGF {
+		outputs, err := downloadSGFs(opts)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, out := range outputs {
+			if err := saveBytes(out.path, out.data); err != nil {
+				log.Fatal(err)
+			}
+		}
+		return
+	}
+
 	outputs, err := sgfToGifs(opts)
 	if err != nil {
 		log.Fatal(err)
@@ -79,6 +96,9 @@ func parseArgs() (*options, error) {
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
+	downloadSGF := fs.Bool("download-sgf", false, "download SGF input instead of rendering GIF output")
+	downloadLimit := fs.Int("download-limit", 20, "maximum number of games to download for batch sources such as ogs-user:NAME")
+	downloadCookieFile := fs.String("download-cookie-file", "", "path to a file containing a raw Cookie header value for authenticated downloads")
 	showMoveNumbers := fs.Bool("move-numbers", false, "draw move numbers on stones")
 	recentMoves := fs.Int("recent-move-numbers", 0, "draw move numbers only for the most recent N moves")
 	variationPath := fs.String("variation-path", "", "choose SGF variation path using 1-based indices separated by commas")
@@ -102,6 +122,9 @@ func parseArgs() (*options, error) {
 	}
 	if *recentMoves < 0 {
 		return nil, fmt.Errorf("recent-move-numbers must be non-negative")
+	}
+	if *downloadLimit <= 0 {
+		return nil, fmt.Errorf("download-limit must be positive")
 	}
 	if *allVariations && *variationPath != "" {
 		return nil, fmt.Errorf("variation-path cannot be combined with all-variations")
@@ -150,10 +173,17 @@ func parseArgs() (*options, error) {
 	if err != nil {
 		return nil, err
 	}
+	downloadCookie, err := loadDownloadCookie(*downloadCookieFile)
+	if err != nil {
+		return nil, err
+	}
 
 	return &options{
 		inputPath:       args[0],
 		outputPath:      args[1],
+		downloadSGF:     *downloadSGF,
+		downloadLimit:   *downloadLimit,
+		downloadCookie:  downloadCookie,
 		showMoveNumbers: *showMoveNumbers,
 		recentMoves:     *recentMoves,
 		variationPath:   path,
@@ -168,6 +198,16 @@ func parseArgs() (*options, error) {
 		katagoThreads:   *katagoThreads,
 		katagoTopMoves:  *katagoTopMoves,
 	}, nil
+}
+
+func saveBytes(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 func save(path string, g *gif.GIF) (err error) {
@@ -188,7 +228,7 @@ func save(path string, g *gif.GIF) (err error) {
 }
 
 func usage() {
-	log.Printf("usage: %s [--move-numbers] [--recent-move-numbers N] [--variation-path 2,1,...] [--all-variations] [--katago-analyze] [--katago-bin PATH] [--katago-model PATH] [--katago-config PATH] [--katago-strength fast|strong|monster] [--katago-view black|white] [--katago-visits N] [--katago-threads N] [--katago-top-moves N] input_sgf_file output_gif_file\n", os.Args[0])
+	log.Printf("usage: %s [--download-sgf] [--download-limit N] [--download-cookie-file PATH] [--move-numbers] [--recent-move-numbers N] [--variation-path 2,1,...] [--all-variations] [--katago-analyze] [--katago-bin PATH] [--katago-model PATH] [--katago-config PATH] [--katago-strength fast|strong|monster] [--katago-view black|white] [--katago-visits N] [--katago-threads N] [--katago-top-moves N] input output\n", os.Args[0])
 }
 
 type renderOutput struct {
@@ -208,7 +248,13 @@ func sgfToGif(opts *options) (*gif.GIF, error) {
 }
 
 func sgfToGifs(opts *options) ([]renderOutput, error) {
-	c, err := sgf.ParseSgfFile(opts.inputPath)
+	inputPath, cleanup, err := resolveInputPathForParsing(opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	c, err := sgf.ParseSgfFile(inputPath)
 	if err != nil {
 		return nil, err
 	}
