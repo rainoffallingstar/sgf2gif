@@ -77,6 +77,9 @@ When `--katago-analyze` is enabled:
 Colab users can start from:
 
 - [notebooks/sgf2gif_katago_colab.ipynb](/Volumes/DataCenter_01/GitHub/sgf2gif/notebooks/sgf2gif_katago_colab.ipynb)
+- [Open In Colab](https://colab.research.google.com/github/rainoffallingstar/sgf2gif/blob/master/notebooks/sgf2gif_katago_colab.ipynb)
+
+The lightweight KataGo smoke test now lives in Colab rather than GitHub Actions. The notebook starts with a `visit=1` analysis run on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), then you can scale up to `fast`, `strong`, or `monster`.
 
 The resulting gif is shown below.
 
