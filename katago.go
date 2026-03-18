@@ -230,7 +230,6 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 		"-config", env.configPath,
 		"-model", env.modelPath,
 		"-override-config", fmt.Sprintf("numAnalysisThreads=%d", opts.threads),
-		"-quit-without-waiting",
 	}
 	cmd := exec.Command(env.binPath, args...)
 	stdout, err := cmd.StdoutPipe()
