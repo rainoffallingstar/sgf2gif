@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Go build artifacts
+/sgf2gif
+*.test
+
+# Coverage reports
+coverage.out
+*.coverprofile
+
+# Generated exports
+*.gif

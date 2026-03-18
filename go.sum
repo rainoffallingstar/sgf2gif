@@ -1,0 +1,6 @@
+github.com/toikarin/sgf v0.0.0-20170114114738-52d988b2e39d h1:NnKBVSHnJJeml09JijOHfOyxPR8AVSZN0bsWwwI+gGo=
+github.com/toikarin/sgf v0.0.0-20170114114738-52d988b2e39d/go.mod h1:swI5m2G4uej26hnSAb2Pyt82Skmap+4fAymyD2cx2h4=
+golang.org/x/image v0.37.0 h1:ZiRjArKI8GwxZOoEtUfhrBtaCN+4b/7709dlT6SSnQA=
+golang.org/x/image v0.37.0/go.mod h1:/3f6vaXC+6CEanU4KJxbcUZyEePbyKbaLoDOe4ehFYY=
+golang.org/x/text v0.35.0 h1:JOVx6vVDFokkpaq1AEptVzLTpDe9KGpj5tR4/X+ybL8=
+golang.org/x/text v0.35.0/go.mod h1:khi/HExzZJ2pGnjenulevKNX1W67CUy0AsXcNubPGCA=
