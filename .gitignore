@@ -11,3 +11,12 @@ coverage.out
 
 # Generated exports
 *.gif
+
+# KataGo local logs and outputs
+gtp_logs/
+analysis_logs/
+katago/output/
+katago/bin/
+katago/models/
+katago/configs/
+!katago/README.md
