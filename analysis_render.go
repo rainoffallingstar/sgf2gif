@@ -15,11 +15,6 @@ func drawAnalysisRecommendations(img *image.Paletted, state *boardState, cfg ren
 		return
 	}
 
-	nextPlayerColor := black
-	if state != nil && state.toPlay == white {
-		nextPlayerColor = white
-	}
-
 	layout := cfg.layout.normalized()
 	for i, move := range current.topMoves {
 		if move.pass || !state.inBounds(move.x, move.y) || state.get(move.x, move.y) != background {
@@ -33,8 +28,11 @@ func drawAnalysisRecommendations(img *image.Paletted, state *boardState, cfg ren
 		drawGhostAura(img, centerX, centerY, radius+4, radius+10, colorIndex, i)
 		drawGhostStone(img, centerX, centerY, radius, colorIndex)
 		drawCircleOutline(img, centerX, centerY, radius-1, ghostOutlineColor(colorIndex))
-		drawFilledDot(img, centerX, centerY, maxInt(3, radius/5), uint8(nextPlayerColor))
 		drawCenteredText(img, centerX, centerY+5, label, ghostLabelColor(colorIndex))
+		dotRadius := maxInt(2, radius/7)
+		toPlay := state.toPlay
+		drawCircleOutline(img, centerX, centerY, dotRadius+2, state.opponentOf(toPlay))
+		drawFilledDot(img, centerX, centerY, dotRadius, toPlay)
 		if i < 3 {
 			drawRecommendationRankBadge(img, centerX-radius+4, centerY-radius+8, i+1, colorIndex)
 		}
