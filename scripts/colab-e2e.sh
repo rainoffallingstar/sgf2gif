@@ -32,6 +32,9 @@ SKIP_KATAGO="${SKIP_KATAGO:-0}"
 FOX_URL_DEFAULT="https://www.foxwq.com/qipu/newlist/id/2026031862241631.html"
 FOX_URL="${FOX_URL:-$FOX_URL_DEFAULT}"
 
+E2E_SGF_DEFAULT="$ROOT_DIR/testdata/85130272-301-yrc21-rainoffallingstar1234.sgf"
+E2E_SGF="${E2E_SGF:-$E2E_SGF_DEFAULT}"
+
 bin="/tmp/sgf2gif-colab-e2e"
 
 step() {
@@ -78,7 +81,7 @@ step "Build sgf2gif"
 
 step "Local render (no KataGo)"
 local_gif="$OUT_DIR/local.gif"
-"$bin" "$ROOT_DIR/testdata/katago-e2e.sgf" "$local_gif"
+"$bin" "$E2E_SGF" "$local_gif"
 require_file_nonempty "$local_gif"
 
 if [[ "$SKIP_REMOTE" != "1" ]]; then
@@ -109,7 +112,7 @@ fi
 if [[ "$SKIP_KATAGO" != "1" ]]; then
   step "KataGo analysis render (mild) + cache rerender"
   katago_gif="$OUT_DIR/katago-mild.gif"
-  "$bin" --katago-strength mild "$ROOT_DIR/testdata/katago-e2e.sgf" "$katago_gif"
+  "$bin" --katago-strength mild "$E2E_SGF" "$katago_gif"
   require_file_nonempty "$katago_gif"
 
   cache_sgf="${katago_gif%.*}.katago.sgf"

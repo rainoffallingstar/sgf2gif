@@ -168,7 +168,7 @@ Colab users can start from:
 - [notebooks/sgf2gif_katago_colab.ipynb](/Volumes/DataCenter_01/GitHub/sgf2gif/notebooks/sgf2gif_katago_colab.ipynb)
 - [Open In Colab](https://colab.research.google.com/github/rainoffallingstar/sgf2gif/blob/master/notebooks/sgf2gif_katago_colab.ipynb)
 
-The Colab notebook now starts with remote download smoke tests for OGS and Fox, then runs a `mild` KataGo analysis check on [testdata/katago-e2e.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/katago-e2e.sgf), and finally lets you scale up to `fast`, `strong`, or `monster`.
+The Colab notebook now starts with remote download smoke tests for OGS and Fox, then runs a `mild` KataGo analysis check on [testdata/85130272-301-yrc21-rainoffallingstar1234.sgf](/Volumes/DataCenter_01/GitHub/sgf2gif/testdata/85130272-301-yrc21-rainoffallingstar1234.sgf), and finally lets you scale up to `fast`, `strong`, or `monster`.
 It installs the official Go `1.26.1` toolchain directly, because Colab's default `golang-go` package is too old for this module.
 It is safe to rerun from the top, because the notebook switches back to `/content` before removing and recloning the repo.
 If your current Colab session is already stuck in a deleted repo directory, run `%cd /content` once before rerunning the first cell.
