@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -166,6 +167,71 @@ func TestAnnotatedSGFForVariationPreservesExistingRootComment(t *testing.T) {
 	}
 	if !strings.Contains(text, "KataGo: platform=linux/amd64") {
 		t.Fatalf("annotated SGF missing compact appended summary: %s", text)
+	}
+}
+
+func TestSgfToGifUsesCachedAnalysisWithoutExtraBlankFrames(t *testing.T) {
+	collection, err := sgf.ParseSgf("(;FF[4]GM[1]SZ[9]PB[Black]PW[White];B[aa];W[bb])")
+	if err != nil {
+		t.Fatalf("ParseSgf returned error: %v", err)
+	}
+
+	analysis := &analysisSeries{
+		diagnostics: "Platform: linux/amd64",
+		cacheMeta: &katagoCacheMetadata{
+			GeneratedBy: katagoCacheVersionV2,
+			Backend:     "cpu",
+			MaxVisits:   50,
+			Threads:     2,
+			Workers:     1,
+			TopMoves:    3,
+		},
+		frames: []positionAnalysis{
+			{
+				winrate:    0.60,
+				scoreLead:  2.5,
+				visits:     100,
+				playedMove: "A9",
+				bestMove:   "D4",
+				lossKnown:  true,
+				moveLoss:   0.7,
+				winrateGap: 0.02,
+				topMoves: []analysisMove{
+					{move: "D4", x: 3, y: 5, visits: 100, order: 0, winrate: 0.60, scoreLead: 2.5},
+				},
+			},
+			{
+				winrate:    0.58,
+				scoreLead:  1.8,
+				visits:     90,
+				playedMove: "B8",
+				bestMove:   "C3",
+				lossKnown:  true,
+				moveLoss:   0.4,
+				winrateGap: 0.04,
+				topMoves: []analysisMove{
+					{move: "C3", x: 2, y: 6, visits: 80, order: 0, winrate: 0.58, scoreLead: 1.8},
+				},
+			},
+		},
+	}
+
+	data, err := annotatedSGFForVariation(collection, 9, nil, analysis)
+	if err != nil {
+		t.Fatalf("annotatedSGFForVariation returned error: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "cached.katago.sgf")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	g, err := sgfToGif(&options{inputPath: path})
+	if err != nil {
+		t.Fatalf("sgfToGif returned error: %v", err)
+	}
+	if got, want := len(g.Image), 3; got != want {
+		t.Fatalf("gif frame count = %d, want %d", got, want)
 	}
 }
 
