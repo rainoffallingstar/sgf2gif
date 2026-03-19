@@ -36,28 +36,38 @@ func drawAnalysisRecommendations(img *image.Paletted, state *boardState, cfg ren
 	}
 }
 
-func drawAnalysisDecisionArrows(img *image.Paletted, state *boardState, current *action, cfg renderConfig) {
+func drawAnalysisNextMoveArrow(img *image.Paletted, state *boardState, current *action, cfg renderConfig) {
 	if current == nil || current.move == nil || current.move.pass || cfg.summaryFrame {
 		return
 	}
 	frame := cfg.analysis.frameAt(cfg.currentFrame)
-	if frame == nil || frame.bestMove == "" || frame.bestMove == frame.playedMove {
+	if frame == nil || len(frame.topMoves) == 0 {
 		return
 	}
-	bestX, bestY, pass, err := parseGTPMove(frame.bestMove, state.size)
-	if err != nil || pass || !state.inBounds(bestX, bestY) {
+
+	var move *analysisMove
+	for i := range frame.topMoves {
+		candidate := &frame.topMoves[i]
+		if candidate.pass || !state.inBounds(candidate.x, candidate.y) {
+			continue
+		}
+		if state.get(candidate.x, candidate.y) != background {
+			continue
+		}
+		move = candidate
+		break
+	}
+	if move == nil {
 		return
 	}
 
 	layout := cfg.layout.normalized()
 	startX := boardOriginX() + current.move.x*stoneDiameter
 	startY := boardOriginYForLayout(layout) + current.move.y*stoneDiameter
-	endX := boardOriginX() + bestX*stoneDiameter
-	endY := boardOriginYForLayout(layout) + bestY*stoneDiameter
+	endX := boardOriginX() + move.x*stoneDiameter
+	endY := boardOriginYForLayout(layout) + move.y*stoneDiameter
 
 	drawArrowLine(img, startX, startY, endX, endY, analysisBlue)
-	drawMoveTag(img, startX, startY, "PLAYED", currentMoveHighlightColor(cfg), current.move.x > state.size/2, true)
-	drawMoveTag(img, endX, endY, "BEST", analysisBlue, bestX > state.size/2, false)
 }
 
 func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
@@ -348,12 +358,6 @@ func formatScoreLead(score float64, view string) string {
 
 func formatMoveDetail(current *positionAnalysis) string {
 	parts := []string{}
-	if current.playedMove != "" {
-		parts = append(parts, "Played: "+current.playedMove)
-	}
-	if current.bestMove != "" {
-		parts = append(parts, "Best: "+current.bestMove)
-	}
 	if current.lossKnown {
 		parts = append(parts, fmt.Sprintf("Loss: %.1f pts", current.moveLoss))
 		parts = append(parts, fmt.Sprintf("WR gap: %.1fpp", current.winrateGap*100))

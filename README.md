@@ -77,7 +77,7 @@ $ sgf2gif --katago-analyze /tmp/foo.sgf /tmp/foo.gif
 With KataGo enabled, the GIF now also includes:
 
 - ghost-stone next-move recommendations on the board
-- `PLAYED` and `BEST` board labels, plus an arrow from the played move to the best move
+- an arrow from the last move to KataGo's predicted next move
 - a move-quality badge and gradient last-move highlight based on the winrate gap
 - a final summary frame with phase hit rates, move-quality comparison, verdict lines, and top blunders
 - a companion analyzed SGF saved as `*.katago.sgf` for cache-based rerenders
@@ -129,7 +129,7 @@ When `--katago-analyze` is enabled:
 - If the KataGo model or analysis config are missing, `sgf2gif` will download the latest official model and config files automatically into `./katago/`.
 - KataGo startup/loading logs are suppressed during normal analysis; the terminal shows a live progress bar with elapsed time and ETA, then a final total duration line.
 - The analysis panel can show the current move, KataGo's best move, and the estimated point loss for the played move.
-- The analysis panel can also show the winrate gap, a quality label, and board-level `PLAYED` / `BEST` annotations.
+- The analysis panel can also show the winrate gap and a quality label.
 - The final frame summarizes phase-by-phase accuracy, average loss, largest swing, phase pressure, and top blunders.
 - By default, an analyzed companion SGF is saved next to the GIF as `*.katago.sgf`.
 - The companion SGF cache stores the rendered-position analysis, diagnostics summary, visit budget, top-move count, and the actual resolved backend when it can be determined.
