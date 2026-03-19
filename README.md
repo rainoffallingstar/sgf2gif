@@ -3,7 +3,7 @@ Generate animated gifs from sgf files.
 
 # Installation
 ```
-$ go install github.com/alcortesm/sgf2gif@latest
+$ go install github.com/rainoffallingstar/sgf2gif@latest
 ```
 
 # Usage Example
@@ -127,19 +127,35 @@ When `--katago-analyze` is enabled:
 - On Linux and Windows, if KataGo is missing, `sgf2gif` will download the latest official KataGo release automatically.
 - On macOS, if KataGo is missing, `sgf2gif` will prompt you to install it with `brew install katago`.
 - If the KataGo model or analysis config are missing, `sgf2gif` will download the latest official model and config files automatically into `./katago/`.
-- KataGo startup and loading logs are streamed to the terminal.
-- Analysis progress is shown in the terminal with a live progress bar.
+- KataGo startup/loading logs are suppressed during normal analysis; the terminal shows a live progress bar with elapsed time and ETA, then a final total duration line.
 - The analysis panel can show the current move, KataGo's best move, and the estimated point loss for the played move.
 - The analysis panel can also show the winrate gap, a quality label, and board-level `PLAYED` / `BEST` annotations.
 - The final frame summarizes phase-by-phase accuracy, average loss, largest swing, phase pressure, and top blunders.
-- An analyzed companion SGF is saved next to the GIF as `*.katago.sgf`.
-- Re-rendering an SGF that already contains cached KataGo data can draw the analysis again even without rerunning KataGo.
+- By default, an analyzed companion SGF is saved next to the GIF as `*.katago.sgf`.
+- The companion SGF cache stores the rendered-position analysis, diagnostics summary, visit budget, top-move count, and the actual resolved backend when it can be determined.
+- Cache reuse is compatibility-based: `sgf2gif` reuses a cache when its `maxVisits` and `topMoves` are at least as strong as the current request, and when an explicitly requested backend remains compatible.
+- `--katago-refresh` forces a fresh KataGo run even if a compatible cache already exists.
+- `--katago-cache-only` refuses to launch KataGo and fails unless a compatible cache is already present.
+- `--katago-no-cache-write` still runs KataGo analysis, but skips writing the companion `*.katago.sgf` file.
 
 For example, you can analyze once and rerender from cache later:
 
 ```
 $ sgf2gif --katago-strength strong /tmp/foo.sgf /tmp/foo.gif
 $ sgf2gif /tmp/foo.katago.sgf /tmp/foo-rerender.gif
+```
+
+If you want to force a rerun or require cache-only behavior:
+
+```
+$ sgf2gif --katago-refresh --katago-strength strong /tmp/foo.sgf /tmp/foo.gif
+$ sgf2gif --katago-cache-only /tmp/foo.katago.sgf /tmp/foo-rerender.gif
+```
+
+If you want analysis overlays for this run but do not want to write a companion cache file:
+
+```
+$ sgf2gif --katago-analyze --katago-no-cache-write /tmp/foo.sgf /tmp/foo.gif
 ```
 
 If you want a denser review pass with more candidate moves and more visits:

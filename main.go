@@ -7,7 +7,6 @@ import (
 	"image/color"
 	"image/gif"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,24 +21,31 @@ import (
 )
 
 type options struct {
-	inputPath       string
-	outputPath      string
-	downloadSGF     bool
-	downloadLimit   int
-	downloadCookie  string
-	showMoveNumbers bool
-	recentMoves     int
-	variationPath   []int
-	allVariations   bool
-	enableKataGo    bool
-	katagoBin       string
-	katagoModel     string
-	katagoConfig    string
-	katagoStrength  string
-	katagoView      string
-	katagoVisits    int
-	katagoThreads   int
-	katagoTopMoves  int
+	inputPath            string
+	outputPath           string
+	downloadSGF          bool
+	downloadLimit        int
+	downloadCookie       string
+	showMoveNumbers      bool
+	recentMoves          int
+	variationPath        []int
+	allVariations        bool
+	enableKataGo         bool
+	katagoRefresh        bool
+	katagoCacheOnly      bool
+	katagoNoCacheWrite   bool
+	katagoDetectOnly     bool
+	katagoDiagnosticsOut string
+	katagoBin            string
+	katagoModel          string
+	katagoConfig         string
+	katagoStrength       string
+	katagoBackend        string
+	katagoView           string
+	katagoVisits         int
+	katagoThreads        int
+	katagoWorkers        int
+	katagoTopMoves       int
 }
 
 type renderConfig struct {
@@ -63,8 +69,7 @@ var playerHeaderFace = mustLoadFontFace(gobold.TTF, 18)
 func main() {
 	opts, err := parseArgs()
 	if err != nil {
-		usage()
-		log.Fatal(err)
+		fatalUsage(err)
 	}
 
 	if opts.downloadSGF {
@@ -76,6 +81,13 @@ func main() {
 			if err := saveBytes(out.path, out.data); err != nil {
 				log.Fatal(err)
 			}
+		}
+		return
+	}
+
+	if opts.katagoDetectOnly {
+		if err := detectKataGoSetup(katagoOptionsFromCLI(opts)); err != nil {
+			log.Fatal(err)
 		}
 		return
 	}
@@ -98,6 +110,12 @@ func main() {
 	}
 }
 
+func fatalUsage(err error) {
+	usage()
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	os.Exit(2)
+}
+
 func parseArgs() (*options, error) {
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -110,20 +128,31 @@ func parseArgs() (*options, error) {
 	variationPath := fs.String("variation-path", "", "choose SGF variation path using 1-based indices separated by commas")
 	allVariations := fs.Bool("all-variations", false, "export all leaf variations to separate GIF files")
 	enableKataGo := fs.Bool("katago-analyze", false, "analyze each rendered position with KataGo")
+	katagoRefresh := fs.Bool("katago-refresh", false, "force KataGo re-analysis instead of reusing compatible cache")
+	katagoCacheOnly := fs.Bool("katago-cache-only", false, "require a compatible KataGo cache and fail instead of launching KataGo")
+	katagoNoCacheWrite := fs.Bool("katago-no-cache-write", false, "do not write companion .katago.sgf cache files after KataGo analysis")
+	katagoDetectOnly := fs.Bool("katago-detect-only", false, "print KataGo environment detection and download plan without analyzing SGF")
+	katagoDiagnosticsOut := fs.String("katago-diagnostics-out", "", "write KataGo environment diagnostics to a text file")
 	katagoBin := fs.String("katago-bin", "", "path to the KataGo executable")
 	katagoModel := fs.String("katago-model", "", "path to the KataGo model (.bin.gz)")
 	katagoConfig := fs.String("katago-config", "", "path to the KataGo analysis config (.cfg)")
 	katagoStrength := fs.String("katago-strength", "", "KataGo strength preset: mild, fast, strong, or monster")
+	katagoBackend := fs.String("katago-backend", "auto", "KataGo backend for automatic downloads: auto, cpu, opencl, or cuda")
 	katagoView := fs.String("katago-view", "black", "KataGo display perspective: black or white")
 	katagoVisits := fs.Int("katago-visits", 200, "maximum KataGo visits per rendered position")
 	katagoThreads := fs.Int("katago-threads", 2, "number of KataGo analysis threads")
+	katagoWorkers := fs.Int("katago-workers", 1, "number of concurrent KataGo worker processes for chunked SGF analysis")
 	katagoTopMoves := fs.Int("katago-top-moves", 3, "number of KataGo candidate moves to display on the board")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
 	}
 
 	args := fs.Args()
-	if len(args) != 2 {
+	if *katagoDetectOnly {
+		if len(args) != 0 && len(args) != 2 {
+			return nil, fmt.Errorf("katago-detect-only accepts either zero positional arguments or the usual input/output pair")
+		}
+	} else if len(args) != 2 {
 		return nil, fmt.Errorf("bad number of arguments")
 	}
 	if *recentMoves < 0 {
@@ -141,8 +170,18 @@ func parseArgs() (*options, error) {
 	if *katagoThreads <= 0 {
 		return nil, fmt.Errorf("katago-threads must be positive")
 	}
+	if *katagoWorkers <= 0 {
+		return nil, fmt.Errorf("katago-workers must be positive")
+	}
 	if *katagoTopMoves < 0 {
 		return nil, fmt.Errorf("katago-top-moves must be non-negative")
+	}
+	if *katagoRefresh && *katagoCacheOnly {
+		return nil, fmt.Errorf("katago-refresh cannot be combined with katago-cache-only")
+	}
+	resolvedBackend, err := normalizeKataGoBackend(*katagoBackend)
+	if err != nil {
+		return nil, err
 	}
 	resolvedView, err := normalizeKataGoView(*katagoView)
 	if err != nil {
@@ -166,14 +205,22 @@ func parseArgs() (*options, error) {
 	}
 
 	katagoConfigured := *enableKataGo ||
+		*katagoRefresh ||
+		*katagoCacheOnly ||
+		*katagoDetectOnly ||
 		visited["katago-bin"] ||
 		visited["katago-model"] ||
 		visited["katago-config"] ||
 		visited["katago-strength"] ||
+		visited["katago-backend"] ||
 		visited["katago-view"] ||
 		visited["katago-visits"] ||
 		visited["katago-threads"] ||
+		visited["katago-workers"] ||
 		visited["katago-top-moves"]
+	if *katagoNoCacheWrite && !katagoConfigured {
+		return nil, fmt.Errorf("katago-no-cache-write requires KataGo analysis or another KataGo analysis option")
+	}
 
 	path, err := parseVariationPath(*variationPath)
 	if err != nil {
@@ -184,25 +231,43 @@ func parseArgs() (*options, error) {
 		return nil, err
 	}
 
+	inputPath := ""
+	outputPath := ""
+	if len(args) == 2 {
+		inputPath = args[0]
+		outputPath = args[1]
+	}
+	diagnosticsOut := strings.TrimSpace(*katagoDiagnosticsOut)
+	if *katagoDetectOnly && diagnosticsOut == "" {
+		diagnosticsOut = filepath.Join(defaultKataGoRoot, "diagnostics.txt")
+	}
+
 	return &options{
-		inputPath:       args[0],
-		outputPath:      args[1],
-		downloadSGF:     *downloadSGF,
-		downloadLimit:   *downloadLimit,
-		downloadCookie:  downloadCookie,
-		showMoveNumbers: *showMoveNumbers,
-		recentMoves:     *recentMoves,
-		variationPath:   path,
-		allVariations:   *allVariations,
-		enableKataGo:    katagoConfigured,
-		katagoBin:       *katagoBin,
-		katagoModel:     *katagoModel,
-		katagoConfig:    *katagoConfig,
-		katagoStrength:  resolvedStrength,
-		katagoView:      resolvedView,
-		katagoVisits:    *katagoVisits,
-		katagoThreads:   *katagoThreads,
-		katagoTopMoves:  *katagoTopMoves,
+		inputPath:            inputPath,
+		outputPath:           outputPath,
+		downloadSGF:          *downloadSGF,
+		downloadLimit:        *downloadLimit,
+		downloadCookie:       downloadCookie,
+		showMoveNumbers:      *showMoveNumbers,
+		recentMoves:          *recentMoves,
+		variationPath:        path,
+		allVariations:        *allVariations,
+		enableKataGo:         katagoConfigured,
+		katagoRefresh:        *katagoRefresh,
+		katagoCacheOnly:      *katagoCacheOnly,
+		katagoNoCacheWrite:   *katagoNoCacheWrite,
+		katagoDetectOnly:     *katagoDetectOnly,
+		katagoDiagnosticsOut: diagnosticsOut,
+		katagoBin:            *katagoBin,
+		katagoModel:          *katagoModel,
+		katagoConfig:         *katagoConfig,
+		katagoStrength:       resolvedStrength,
+		katagoBackend:        resolvedBackend,
+		katagoView:           resolvedView,
+		katagoVisits:         *katagoVisits,
+		katagoThreads:        *katagoThreads,
+		katagoWorkers:        *katagoWorkers,
+		katagoTopMoves:       *katagoTopMoves,
 	}, nil
 }
 
@@ -234,7 +299,7 @@ func save(path string, g *gif.GIF) (err error) {
 }
 
 func usage() {
-	log.Printf(
+	fmt.Fprintf(os.Stderr,
 		"usage: %s [options] input output\n"+
 			"\n"+
 			"core options:\n"+
@@ -246,10 +311,17 @@ func usage() {
 			"\n"+
 			"katago options:\n"+
 			"  --katago-analyze                  analyze positions with KataGo\n"+
+			"  --katago-refresh                  force re-analysis instead of reusing cache\n"+
+			"  --katago-cache-only               require compatible cache and do not launch KataGo\n"+
+			"  --katago-no-cache-write           skip writing companion .katago.sgf cache files after analysis\n"+
+			"  --katago-detect-only              print KataGo detection/download plan and exit\n"+
+			"  --katago-diagnostics-out PATH     save KataGo detection diagnostics as text\n"+
 			"  --katago-strength mild|fast|strong|monster\n"+
+			"  --katago-backend auto|cpu|opencl|cuda\n"+
 			"  --katago-view black|white         choose analysis perspective\n"+
 			"  --katago-visits N                 set KataGo visit budget directly\n"+
 			"  --katago-threads N                set KataGo analysis threads\n"+
+			"  --katago-workers N                run chunked SGF analysis across N KataGo worker processes\n"+
 			"  --katago-top-moves N              number of candidate moves to draw on board\n"+
 			"\n"+
 			"outputs:\n"+
@@ -274,6 +346,10 @@ func sgfToGif(opts *options) (*gif.GIF, error) {
 		return nil, fmt.Errorf("expected one GIF output, got %d", len(outputs))
 	}
 	return outputs[0].gif, nil
+}
+
+func shouldWriteKataGoCache(opts *options, analysis *analysisSeries) bool {
+	return analysis != nil && !opts.katagoNoCacheWrite
 }
 
 func sgfToGifs(opts *options) ([]renderOutput, error) {
@@ -329,10 +405,24 @@ func sgfToGifs(opts *options) ([]renderOutput, error) {
 		if err != nil {
 			return nil, err
 		}
-		if opts.enableKataGo {
-			analysis, err = analyzeActionsWithKataGo(info, initial, actions, koRule, katagoOptionsFromCLI(opts))
-			if err != nil {
-				return nil, err
+		katagoOpts := katagoOptionsFromCLI(opts)
+		if opts.katagoCacheOnly {
+			action, reason := determineKataGoCacheAction(analysis, katagoOpts, false, true)
+			if action == katagoCacheActionUse {
+				fmt.Fprintf(os.Stdout, "Using KataGo cache for %s (%s)\n", variationLabel(path), reason)
+			} else {
+				return nil, fmt.Errorf("KataGo cache required for %s: %s", variationLabel(path), reason)
+			}
+		} else if opts.enableKataGo {
+			action, reason := determineKataGoCacheAction(analysis, katagoOpts, opts.katagoRefresh, false)
+			if action == katagoCacheActionUse {
+				fmt.Fprintf(os.Stdout, "Reusing KataGo cache for %s (%s)\n", variationLabel(path), reason)
+			} else {
+				fmt.Fprintf(os.Stdout, "Running KataGo for %s (%s)\n", variationLabel(path), reason)
+				analysis, err = analyzeActionsWithKataGo(info, initial, actions, koRule, katagoOpts)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if analysis != nil {
@@ -361,7 +451,7 @@ func sgfToGifs(opts *options) ([]renderOutput, error) {
 		outputPath := variationOutputPath(opts.outputPath, path, len(paths))
 		var annotatedSGF []byte
 		var annotatedPath string
-		if analysis != nil {
+		if shouldWriteKataGoCache(opts, analysis) {
 			annotatedSGF, err = annotatedSGFForVariation(c, boardSize, path, analysis)
 			if err != nil {
 				return nil, err
@@ -957,6 +1047,21 @@ func katagoVisitsForStrength(value string) (int, error) {
 	}
 }
 
+func normalizeKataGoBackend(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return "auto", nil
+	case "cpu":
+		return "cpu", nil
+	case "opencl":
+		return "opencl", nil
+	case "cuda":
+		return "cuda", nil
+	default:
+		return "", fmt.Errorf("katago-backend must be one of: auto, cpu, opencl, cuda")
+	}
+}
+
 func normalizeKataGoView(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "black":
@@ -1458,18 +1563,20 @@ func drawPlayerHeader(img *image.Paletted, baselineY int, blackPlayer, whitePlay
 }
 
 func drawInfoStone(img *image.Paletted, centerX, centerY, radius int, stone uint8) {
+	outerSquared := radius * radius
 	if stone == white {
+		innerRadius := radius - 1
+		innerSquared := innerRadius * innerRadius
 		for x := centerX - radius; x <= centerX+radius; x++ {
 			for y := centerY - radius; y <= centerY+radius; y++ {
-				d := dist(x, y, centerX, centerY)
-				if d <= radius {
+				if squaredDistance(x, y, centerX, centerY) <= outerSquared {
 					img.SetColorIndex(x, y, black)
 				}
 			}
 		}
-		for x := centerX - (radius - 1); x <= centerX+(radius-1); x++ {
-			for y := centerY - (radius - 1); y <= centerY+(radius-1); y++ {
-				if dist(x, y, centerX, centerY) <= radius-1 {
+		for x := centerX - innerRadius; x <= centerX+innerRadius; x++ {
+			for y := centerY - innerRadius; y <= centerY+innerRadius; y++ {
+				if squaredDistance(x, y, centerX, centerY) <= innerSquared {
 					img.SetColorIndex(x, y, white)
 				}
 			}
@@ -1479,7 +1586,7 @@ func drawInfoStone(img *image.Paletted, centerX, centerY, radius int, stone uint
 
 	for x := centerX - radius; x <= centerX+radius; x++ {
 		for y := centerY - radius; y <= centerY+radius; y++ {
-			if dist(x, y, centerX, centerY) <= radius {
+			if squaredDistance(x, y, centerX, centerY) <= outerSquared {
 				img.SetColorIndex(x, y, stone)
 			}
 		}
@@ -1543,9 +1650,10 @@ func drawStarPointsWithLayout(img *image.Paletted, boardSize int, layout renderL
 	for _, p := range starPoints(boardSize) {
 		centerX := boardOriginX() + p.x*stoneDiameter
 		centerY := boardOriginYForLayout(layout) + p.y*stoneDiameter
+		radiusSquared := 9
 		for x := centerX - 3; x <= centerX+3; x++ {
 			for y := centerY - 3; y <= centerY+3; y++ {
-				if dist(x, y, centerX, centerY) <= 3 {
+				if squaredDistance(x, y, centerX, centerY) <= radiusSquared {
 					img.SetColorIndex(x, y, black)
 				}
 			}
@@ -1682,10 +1790,12 @@ func drawLastMoveMarkerWithColorWithLayout(img *image.Paletted, lastMove *move, 
 	y := boardOriginYForLayout(layout) + lastMove.y*stoneDiameter
 	outerRadius := stoneDiameter/2 - 3
 	innerRadius := outerRadius - 3
+	outerSquared := outerRadius * outerRadius
+	innerSquared := innerRadius * innerRadius
 	for px := x - outerRadius; px <= x+outerRadius; px++ {
 		for py := y - outerRadius; py <= y+outerRadius; py++ {
-			d := dist(px, py, x, y)
-			if d <= outerRadius && d >= innerRadius {
+			d2 := squaredDistance(px, py, x, y)
+			if d2 <= outerSquared && d2 >= innerSquared {
 				img.SetColorIndex(px, py, colorIndex)
 			}
 		}
@@ -1694,10 +1804,12 @@ func drawLastMoveMarkerWithColorWithLayout(img *image.Paletted, lastMove *move, 
 
 func drawCircleOutline(img *image.Paletted, centerX, centerY, radius int, colorIndex uint8) {
 	inner := radius - 2
+	outerSquared := radius * radius
+	innerSquared := inner * inner
 	for x := centerX - radius; x <= centerX+radius; x++ {
 		for y := centerY - radius; y <= centerY+radius; y++ {
-			d := dist(x, y, centerX, centerY)
-			if d <= radius && d >= inner {
+			d2 := squaredDistance(x, y, centerX, centerY)
+			if d2 <= outerSquared && d2 >= innerSquared {
 				img.SetColorIndex(x, y, colorIndex)
 			}
 		}
@@ -1730,9 +1842,10 @@ func drawCrossMark(img *image.Paletted, centerX, centerY, radius int, colorIndex
 }
 
 func drawTerritoryDot(img *image.Paletted, centerX, centerY int, colorIndex uint8) {
+	radiusSquared := 16
 	for x := centerX - 4; x <= centerX+4; x++ {
 		for y := centerY - 4; y <= centerY+4; y++ {
-			if dist(x, y, centerX, centerY) <= 4 {
+			if squaredDistance(x, y, centerX, centerY) <= radiusSquared {
 				img.SetColorIndex(x, y, colorIndex)
 			}
 		}
@@ -1777,9 +1890,10 @@ func drawStoneWithLayout(img *image.Paletted, gridX, gridY int, stone uint8, lay
 	centerX := boardOriginX() + gridX*stoneDiameter
 	centerY := boardOriginYForLayout(layout) + gridY*stoneDiameter
 	radius := stoneDiameter / 2
+	radiusSquared := radius * radius
 	for x := centerX - radius; x <= centerX+radius; x++ {
 		for y := centerY - radius; y <= centerY+radius; y++ {
-			if dist(x, y, centerX, centerY) <= radius {
+			if squaredDistance(x, y, centerX, centerY) <= radiusSquared {
 				img.SetColorIndex(x, y, stone)
 			}
 		}
@@ -2070,7 +2184,7 @@ func propertyValues(node *sgf.Node, ident string) []string {
 	return nil
 }
 
-func dist(x1, y1, x2, y2 int) int {
+func squaredDistance(x1, y1, x2, y2 int) int {
 	x := x2 - x1
 	if x < 0 {
 		x = -x
@@ -2079,7 +2193,5 @@ func dist(x1, y1, x2, y2 int) int {
 	if y < 0 {
 		y = -y
 	}
-	h := float64(x*x + y*y)
-	sq := math.Sqrt(h)
-	return int(sq)
+	return x*x + y*y
 }

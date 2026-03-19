@@ -289,9 +289,10 @@ func fillRect(img *image.Paletted, left, top, right, bottom int, colorIndex uint
 }
 
 func drawFilledDot(img *image.Paletted, centerX, centerY, radius int, colorIndex uint8) {
+	radiusSquared := radius * radius
 	for x := centerX - radius; x <= centerX+radius; x++ {
 		for y := centerY - radius; y <= centerY+radius; y++ {
-			if dist(x, y, centerX, centerY) <= radius {
+			if squaredDistance(x, y, centerX, centerY) <= radiusSquared {
 				img.SetColorIndex(x, y, colorIndex)
 			}
 		}
@@ -420,12 +421,18 @@ func recommendationColor(opponentWinrate float64) uint8 {
 }
 
 func drawGhostStone(img *image.Paletted, centerX, centerY, radius int, colorIndex uint8) {
+	outerSquared := radius * radius
+	innerRadius := maxInt(0, radius-1)
+	innerSquared := innerRadius * innerRadius
+	coreRadius := radius / 3
+	coreSquared := coreRadius * coreRadius
 	for x := centerX - radius; x <= centerX+radius; x++ {
 		for y := centerY - radius; y <= centerY+radius; y++ {
-			if dist(x, y, centerX, centerY) > radius {
+			d2 := squaredDistance(x, y, centerX, centerY)
+			if d2 > outerSquared {
 				continue
 			}
-			if dist(x, y, centerX, centerY) >= radius-1 || (x+y)%2 == 0 || dist(x, y, centerX, centerY) <= radius/3 {
+			if d2 >= innerSquared || (x+y)%2 == 0 || d2 <= coreSquared {
 				img.SetColorIndex(x, y, colorIndex)
 			}
 		}
@@ -434,13 +441,15 @@ func drawGhostStone(img *image.Paletted, centerX, centerY, radius int, colorInde
 
 func drawGhostAura(img *image.Paletted, centerX, centerY, innerRadius, outerRadius int, colorIndex uint8, rank int) {
 	spacing := 3 + minInt(rank, 2)
+	innerSquared := innerRadius * innerRadius
+	outerSquared := outerRadius * outerRadius
 	for x := centerX - outerRadius; x <= centerX+outerRadius; x++ {
 		for y := centerY - outerRadius; y <= centerY+outerRadius; y++ {
-			d := dist(x, y, centerX, centerY)
-			if d < innerRadius || d > outerRadius {
+			d2 := squaredDistance(x, y, centerX, centerY)
+			if d2 < innerSquared || d2 > outerSquared {
 				continue
 			}
-			if (x+y+d)%spacing == 0 {
+			if (x+y+d2)%spacing == 0 {
 				img.SetColorIndex(x, y, colorIndex)
 			}
 		}

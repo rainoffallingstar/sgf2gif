@@ -19,6 +19,7 @@ const (
 	defaultDownloadUserAgent = "sgf2gif/1.0"
 	defaultOGSBaseURL        = "https://online-go.com"
 	defaultFoxBaseURL        = "https://www.foxwq.com"
+	maxDownloadWorkers       = 4
 )
 
 type remoteInputKind int
@@ -286,23 +287,51 @@ func fetchOGSUserSGFs(spec remoteInputSpec, settings sgfDownloadSettings) ([]sgf
 	if err != nil {
 		return nil, err
 	}
-	results := make([]sgfDownloadResult, 0, len(gameIDs))
+	if len(gameIDs) == 0 {
+		return nil, nil
+	}
+
+	type downloadJob struct {
+		index  int
+		gameID int
+	}
+	type downloadResult struct {
+		index int
+		file  sgfDownloadResult
+		err   error
+	}
+
+	workerCount := minInt(len(gameIDs), maxDownloadWorkers)
+	jobs := make(chan downloadJob, len(gameIDs))
+	resultsCh := make(chan downloadResult, len(gameIDs))
+	for worker := 0; worker < workerCount; worker++ {
+		go func() {
+			for job := range jobs {
+				file, err := fetchOGSGameSGF(remoteInputSpec{
+					kind:     remoteInputOGSGame,
+					gameID:   strconv.Itoa(job.gameID),
+					provider: "ogs",
+				}, settings)
+				resultsCh <- downloadResult{index: job.index, file: file, err: err}
+			}
+		}()
+	}
 	for i, gameID := range gameIDs {
-		fmt.Fprintf(os.Stdout, "\rDownloading OGS SGFs: %d/%d", i+1, len(gameIDs))
-		file, err := fetchOGSGameSGF(remoteInputSpec{
-			kind:     remoteInputOGSGame,
-			gameID:   strconv.Itoa(gameID),
-			provider: "ogs",
-		}, settings)
-		if err != nil {
+		jobs <- downloadJob{index: i, gameID: gameID}
+	}
+	close(jobs)
+
+	results := make([]sgfDownloadResult, len(gameIDs))
+	for completed := 0; completed < len(gameIDs); completed++ {
+		result := <-resultsCh
+		fmt.Fprintf(os.Stdout, "\rDownloading OGS SGFs: %d/%d", completed+1, len(gameIDs))
+		if result.err != nil {
 			fmt.Fprintln(os.Stdout)
-			return nil, err
+			return nil, result.err
 		}
-		results = append(results, file)
+		results[result.index] = result.file
 	}
-	if len(gameIDs) > 0 {
-		fmt.Fprintln(os.Stdout)
-	}
+	fmt.Fprintln(os.Stdout)
 	return results, nil
 }
 

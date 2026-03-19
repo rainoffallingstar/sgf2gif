@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseRemoteInputSpec(t *testing.T) {
@@ -108,6 +109,51 @@ func TestFetchOGSUserSGFs(t *testing.T) {
 	}
 	if !strings.Contains(string(results[1].data), ";B[bb]") {
 		t.Fatalf("second SGF data = %q", string(results[1].data))
+	}
+}
+
+func TestFetchOGSUserSGFsKeepsListOrderUnderConcurrentDownloads(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/players/" && r.URL.Query().Get("username") == "alice":
+			fmt.Fprint(w, `{"count":1,"results":[{"id":42,"username":"alice"}]}`)
+		case r.URL.Path == "/api/v1/players/42/games":
+			fmt.Fprint(w, `{"next":"","results":[{"id":101},{"id":102},{"id":103}]}`)
+		case r.URL.Path == "/api/v1/games/101/sgf":
+			time.Sleep(40 * time.Millisecond)
+			w.Header().Set("Content-Disposition", "attachment; filename=alice-101.sgf")
+			fmt.Fprint(w, "(;GM[1]FF[4]SZ[19];B[aa])")
+		case r.URL.Path == "/api/v1/games/102/sgf":
+			time.Sleep(5 * time.Millisecond)
+			w.Header().Set("Content-Disposition", "attachment; filename=alice-102.sgf")
+			fmt.Fprint(w, "(;GM[1]FF[4]SZ[19];B[bb])")
+		case r.URL.Path == "/api/v1/games/103/sgf":
+			time.Sleep(15 * time.Millisecond)
+			w.Header().Set("Content-Disposition", "attachment; filename=alice-103.sgf")
+			fmt.Fprint(w, "(;GM[1]FF[4]SZ[19];B[cc])")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	results, err := fetchOGSUserSGFs(remoteInputSpec{
+		kind: remoteInputOGSUser,
+		user: "alice",
+	}, sgfDownloadSettings{
+		client:     server.Client(),
+		limit:      3,
+		ogsBaseURL: server.URL,
+		foxBaseURL: defaultFoxBaseURL,
+	})
+	if err != nil {
+		t.Fatalf("fetchOGSUserSGFs returned error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d SGFs, want 3", len(results))
+	}
+	if results[0].filename != "alice-101.sgf" || results[1].filename != "alice-102.sgf" || results[2].filename != "alice-103.sgf" {
+		t.Fatalf("unexpected result order: %#v", results)
 	}
 }
 

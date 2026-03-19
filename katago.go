@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -28,28 +30,34 @@ const (
 )
 
 type katagoOptions struct {
-	rootDir      string
-	binPath      string
-	modelPath    string
-	configPath   string
-	maxVisits    int
-	threads      int
-	topMoves     int
-	releaseAPI   string
-	networksPage string
-	httpClient   *http.Client
+	rootDir        string
+	binPath        string
+	modelPath      string
+	configPath     string
+	diagnosticsOut string
+	backend        string
+	maxVisits      int
+	threads        int
+	workers        int
+	topMoves       int
+	releaseAPI     string
+	networksPage   string
+	httpClient     *http.Client
 }
 
 type katagoEnvironment struct {
-	binPath    string
-	modelPath  string
-	configPath string
-	releaseTag string
+	binPath         string
+	modelPath       string
+	configPath      string
+	releaseTag      string
+	resolvedBackend string
 }
 
 type analysisSeries struct {
-	frames  []positionAnalysis
-	summary *analysisSummary
+	frames      []positionAnalysis
+	summary     *analysisSummary
+	diagnostics string
+	cacheMeta   *katagoCacheMetadata
 }
 
 type positionAnalysis struct {
@@ -131,17 +139,25 @@ type katagoMoveInfo struct {
 
 func katagoOptionsFromCLI(opts *options) katagoOptions {
 	return katagoOptions{
-		rootDir:      defaultKataGoRoot,
-		binPath:      opts.katagoBin,
-		modelPath:    opts.katagoModel,
-		configPath:   opts.katagoConfig,
-		maxVisits:    opts.katagoVisits,
-		threads:      opts.katagoThreads,
-		topMoves:     opts.katagoTopMoves,
-		releaseAPI:   kataGoLatestReleaseAPIURL,
-		networksPage: kataGoNetworksURL,
-		httpClient:   http.DefaultClient,
+		rootDir:        defaultKataGoRoot,
+		binPath:        opts.katagoBin,
+		modelPath:      opts.katagoModel,
+		configPath:     opts.katagoConfig,
+		diagnosticsOut: opts.katagoDiagnosticsOut,
+		backend:        opts.katagoBackend,
+		maxVisits:      opts.katagoVisits,
+		threads:        opts.katagoThreads,
+		workers:        opts.katagoWorkers,
+		topMoves:       opts.katagoTopMoves,
+		releaseAPI:     kataGoLatestReleaseAPIURL,
+		networksPage:   kataGoNetworksURL,
+		httpClient:     http.DefaultClient,
 	}
+}
+
+type katagoWorkerPlan struct {
+	queries []katagoAnalysisQuery
+	threads int
 }
 
 func (s *analysisSeries) frameAt(i int) *positionAnalysis {
@@ -177,6 +193,8 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 	}
 	applyDecisionAnalysis(frames, decisions, results)
 	series := &analysisSeries{frames: frames}
+	series.diagnostics, _ = buildKataGoDiagnosticsReport(opts)
+	series.cacheMeta = buildKataGoCacheMetadata(opts, env.resolvedBackend)
 	series.summary = buildAnalysisSummary(actions, series)
 	return series, nil
 }
@@ -271,11 +289,92 @@ func buildKataGoQueries(info *gameInfo, specs []frameSpec, maxVisits int) ([]kat
 }
 
 func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opts katagoOptions) (map[string]katagoAnalysisResponse, error) {
+	if len(queries) == 0 {
+		return map[string]katagoAnalysisResponse{}, nil
+	}
+
+	startedAt := time.Now()
+	plans := buildKataGoWorkerPlans(queries, opts.workers, opts.threads)
+	if len(plans) == 1 {
+		total := len(queries)
+		completed := 0
+		printAnalysisProgress(completed, total, startedAt)
+		responses, err := runSingleKataGoAnalysis(env, plans[0].queries, plans[0].threads, func() {
+			completed++
+			printAnalysisProgress(completed, total, startedAt)
+		})
+		if total > 0 {
+			fmt.Fprintln(os.Stdout)
+			fmt.Fprintf(os.Stdout, "KataGo analysis finished in %s\n", formatKataGoDuration(time.Since(startedAt)))
+		}
+		return responses, err
+	}
+
+	total := len(queries)
+	completed := 0
+	printAnalysisProgress(completed, total, startedAt)
+	progressCh := make(chan struct{}, total)
+	progressDone := make(chan struct{})
+	go func() {
+		for range progressCh {
+			completed++
+			printAnalysisProgress(completed, total, startedAt)
+		}
+		close(progressDone)
+	}()
+
+	type workerResult struct {
+		responses map[string]katagoAnalysisResponse
+		err       error
+	}
+
+	resultsCh := make(chan workerResult, len(plans))
+	var wg sync.WaitGroup
+	for _, plan := range plans {
+		plan := plan
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			responses, err := runSingleKataGoAnalysis(env, plan.queries, plan.threads, func() {
+				progressCh <- struct{}{}
+			})
+			resultsCh <- workerResult{responses: responses, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(progressCh)
+		close(resultsCh)
+	}()
+
+	merged := make(map[string]katagoAnalysisResponse, len(queries))
+	var firstErr error
+	for result := range resultsCh {
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			continue
+		}
+		for id, response := range result.responses {
+			merged[id] = response
+		}
+	}
+	<-progressDone
+	if total > 0 {
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintf(os.Stdout, "KataGo analysis finished in %s\n", formatKataGoDuration(time.Since(startedAt)))
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return merged, nil
+}
+
+func runSingleKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, threads int, onComplete func()) (map[string]katagoAnalysisResponse, error) {
 	args := []string{
 		"analysis",
 		"-config", env.configPath,
 		"-model", env.modelPath,
-		"-override-config", fmt.Sprintf("numAnalysisThreads=%d", opts.threads),
+		"-override-config", fmt.Sprintf("numAnalysisThreads=%d", threads),
 	}
 	cmd := exec.Command(env.binPath, args...)
 	stdout, err := cmd.StdoutPipe()
@@ -298,15 +397,9 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 
 	errCh := make(chan error, 2)
 	go func() {
-		_, readErr := io.Copy(io.MultiWriter(&stderrBuf, os.Stderr), stderr)
+		_, readErr := io.Copy(&stderrBuf, stderr)
 		errCh <- readErr
 	}()
-
-	total := len(queries)
-	completed := 0
-	if total > 0 {
-		printAnalysisProgress(completed, total)
-	}
 
 	responses := map[string]katagoAnalysisResponse{}
 	go func() {
@@ -330,8 +423,9 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 				return
 			}
 			responses[resp.ID] = resp
-			completed++
-			printAnalysisProgress(completed, total)
+			if onComplete != nil {
+				onComplete()
+			}
 		}
 		errCh <- scanner.Err()
 	}()
@@ -363,9 +457,6 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 	if waitErr != nil {
 		return nil, fmt.Errorf("katago exited with error: %w\n%s", waitErr, strings.TrimSpace(stderrBuf.String()))
 	}
-	if total > 0 {
-		fmt.Fprintln(os.Stdout)
-	}
 	if len(responses) == 0 {
 		message := strings.TrimSpace(stderrBuf.String())
 		if message == "" {
@@ -377,7 +468,58 @@ func runKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuery, opt
 	return responses, nil
 }
 
-func printAnalysisProgress(done, total int) {
+func buildKataGoWorkerPlans(queries []katagoAnalysisQuery, workers, totalThreads int) []katagoWorkerPlan {
+	if len(queries) == 0 {
+		return nil
+	}
+	if workers <= 0 {
+		workers = 1
+	}
+	if totalThreads <= 0 {
+		totalThreads = 1
+	}
+	if workers > len(queries) {
+		workers = len(queries)
+	}
+	if workers > totalThreads {
+		workers = totalThreads
+	}
+	if workers <= 1 {
+		return []katagoWorkerPlan{{
+			queries: queries,
+			threads: totalThreads,
+		}}
+	}
+
+	plans := make([]katagoWorkerPlan, 0, workers)
+	baseQueries := len(queries) / workers
+	extraQueries := len(queries) % workers
+	baseThreads := totalThreads / workers
+	extraThreads := totalThreads % workers
+	start := 0
+	for i := 0; i < workers; i++ {
+		queryCount := baseQueries
+		if i < extraQueries {
+			queryCount++
+		}
+		threadCount := baseThreads
+		if i < extraThreads {
+			threadCount++
+		}
+		if threadCount < 1 {
+			threadCount = 1
+		}
+		end := start + queryCount
+		plans = append(plans, katagoWorkerPlan{
+			queries: queries[start:end],
+			threads: threadCount,
+		})
+		start = end
+	}
+	return plans
+}
+
+func printAnalysisProgress(done, total int, startedAt time.Time) {
 	if total <= 0 {
 		return
 	}
@@ -391,7 +533,34 @@ func printAnalysisProgress(done, total int) {
 		filled = barWidth
 	}
 	bar := strings.Repeat("#", filled) + strings.Repeat("-", barWidth-filled)
-	fmt.Fprintf(os.Stdout, "\rKataGo analysis progress: [%s] %d/%d (%.1f%%)", bar, done, total, pct)
+	elapsed := time.Since(startedAt)
+	eta := "--:--"
+	if done > 0 && done < total {
+		remaining := time.Duration(float64(elapsed) * float64(total-done) / float64(done))
+		eta = formatKataGoDuration(remaining)
+	} else if done >= total {
+		eta = "00:00"
+	}
+	fmt.Fprintf(
+		os.Stdout,
+		"\rKataGo analysis progress: [%s] %d/%d (%.1f%%) elapsed %s eta %s",
+		bar,
+		done,
+		total,
+		pct,
+		formatKataGoDuration(elapsed),
+		eta,
+	)
+}
+
+func formatKataGoDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	seconds := int(d.Round(time.Second) / time.Second)
+	minutes := seconds / 60
+	seconds = seconds % 60
+	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
 func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
@@ -410,9 +579,10 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 
 	rootDir := opts.rootDir
 	env := katagoEnvironment{
-		binPath:    opts.binPath,
-		modelPath:  opts.modelPath,
-		configPath: opts.configPath,
+		binPath:         opts.binPath,
+		modelPath:       opts.modelPath,
+		configPath:      opts.configPath,
+		resolvedBackend: unknownKataGoBackend,
 	}
 	if env.binPath == "" {
 		env.binPath = filepath.Join(rootDir, "bin", kataGoExecutableName())
@@ -427,6 +597,9 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 	if fileExists(env.binPath) {
 		tag, _ := detectKataGoVersionTag(env.binPath)
 		env.releaseTag = tag
+		if backend := readKataGoBackendMarker(rootDir); backend != "" {
+			env.resolvedBackend = backend
+		}
 	} else if opts.binPath != "" {
 		return env, fmt.Errorf("KataGo binary not found: %s", env.binPath)
 	} else if path, err := exec.LookPath("katago"); err == nil {
@@ -442,7 +615,11 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 			if err != nil {
 				return env, err
 			}
-			asset, err := selectKataGoAsset(release, runtime.GOOS, runtime.GOARCH)
+			backends, _, err := preferredKataGoBackends(runtime.GOOS, opts.backend)
+			if err != nil {
+				return env, err
+			}
+			asset, resolvedBackend, err := selectKataGoAsset(release, runtime.GOOS, runtime.GOARCH, backends)
 			if err != nil {
 				return env, err
 			}
@@ -453,6 +630,10 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 				return env, err
 			}
 			env.releaseTag = release.TagName
+			env.resolvedBackend = resolvedBackend
+			if err := writeKataGoBackendMarker(rootDir, resolvedBackend); err != nil {
+				return env, err
+			}
 		default:
 			return env, fmt.Errorf("automatic KataGo download is not supported on %s", runtime.GOOS)
 		}
@@ -497,6 +678,140 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 	return env, nil
 }
 
+func detectKataGoSetup(opts katagoOptions) error {
+	text, err := buildKataGoDiagnosticsReport(opts)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(os.Stdout, text); err != nil {
+		return err
+	}
+	if opts.diagnosticsOut != "" {
+		if err := saveBytes(opts.diagnosticsOut, []byte(text)); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "KataGo diagnostics saved to %s\n", opts.diagnosticsOut)
+	}
+	return nil
+}
+
+func buildKataGoDiagnosticsReport(opts katagoOptions) (string, error) {
+	if opts.rootDir == "" {
+		opts.rootDir = defaultKataGoRoot
+	}
+	if opts.httpClient == nil {
+		opts.httpClient = http.DefaultClient
+	}
+	if opts.releaseAPI == "" {
+		opts.releaseAPI = kataGoLatestReleaseAPIURL
+	}
+	if opts.networksPage == "" {
+		opts.networksPage = kataGoNetworksURL
+	}
+
+	env := katagoEnvironment{
+		binPath:    opts.binPath,
+		modelPath:  opts.modelPath,
+		configPath: opts.configPath,
+	}
+	if env.binPath == "" {
+		env.binPath = filepath.Join(opts.rootDir, "bin", kataGoExecutableName())
+	}
+	if env.modelPath == "" {
+		env.modelPath = filepath.Join(opts.rootDir, "models", "default_model.bin.gz")
+	}
+	if env.configPath == "" {
+		env.configPath = filepath.Join(opts.rootDir, "configs", "analysis_example.cfg")
+	}
+
+	var report strings.Builder
+	fmt.Fprintln(&report, "KataGo detect-only mode")
+	fmt.Fprintf(&report, "Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+
+	backends, reason, err := preferredKataGoBackends(runtime.GOOS, opts.backend)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&report, "KataGo backend preference: %s -> %s (%s)\n", normalizeBackendLabel(opts.backend), strings.Join(backends, " -> "), reason)
+
+	releaseTag := ""
+	if fileExists(env.binPath) {
+		releaseTag, _ = detectKataGoVersionTag(env.binPath)
+		fmt.Fprintf(&report, "KataGo binary: existing file at %s", env.binPath)
+		if releaseTag != "" {
+			fmt.Fprintf(&report, " (%s)", releaseTag)
+		}
+		fmt.Fprintln(&report)
+	} else if opts.binPath != "" {
+		return "", fmt.Errorf("KataGo binary not found: %s", env.binPath)
+	} else if pathOnPATH, err := exec.LookPath("katago"); err == nil {
+		env.binPath = pathOnPATH
+		releaseTag, _ = detectKataGoVersionTag(env.binPath)
+		fmt.Fprintf(&report, "KataGo binary: found on PATH at %s", env.binPath)
+		if releaseTag != "" {
+			fmt.Fprintf(&report, " (%s)", releaseTag)
+		}
+		fmt.Fprintln(&report)
+	} else {
+		switch runtime.GOOS {
+		case "darwin":
+			fmt.Fprintln(&report, "KataGo binary: not installed; automatic download is disabled on macOS")
+			fmt.Fprintln(&report, "Install hint: brew install katago")
+		case "linux", "windows":
+			release, err := fetchLatestKataGoRelease(opts.httpClient, opts.releaseAPI)
+			if err != nil {
+				return "", err
+			}
+			releaseTag = release.TagName
+			asset, resolvedBackend, err := selectKataGoAsset(release, runtime.GOOS, runtime.GOARCH, backends)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(&report, "KataGo binary: would download %s using backend %s\n", asset.Name, resolvedBackend)
+			fmt.Fprintf(&report, "KataGo binary target: %s\n", env.binPath)
+			if resolvedBackend != backends[0] {
+				fmt.Fprintf(&report, "KataGo backend fallback: requested %s but would select %s because no matching %s asset was available for %s/%s\n", backends[0], resolvedBackend, backends[0], runtime.GOOS, runtime.GOARCH)
+			}
+		default:
+			fmt.Fprintf(&report, "KataGo binary: automatic download is not supported on %s\n", runtime.GOOS)
+		}
+	}
+
+	switch {
+	case fileExists(env.modelPath):
+		fmt.Fprintf(&report, "KataGo model: existing file at %s\n", env.modelPath)
+	case opts.modelPath != "":
+		return "", fmt.Errorf("KataGo model not found: %s", env.modelPath)
+	default:
+		modelURL, err := fetchLatestModelURL(opts.httpClient, opts.networksPage)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&report, "KataGo model: would download %s\n", modelURL)
+		fmt.Fprintf(&report, "KataGo model target: %s\n", env.modelPath)
+	}
+
+	switch {
+	case fileExists(env.configPath):
+		fmt.Fprintf(&report, "KataGo config: existing file at %s\n", env.configPath)
+	case opts.configPath != "":
+		return "", fmt.Errorf("KataGo config not found: %s", env.configPath)
+	default:
+		if releaseTag == "" {
+			release, err := fetchLatestKataGoRelease(opts.httpClient, opts.releaseAPI)
+			if err != nil {
+				return "", err
+			}
+			releaseTag = release.TagName
+		}
+		configURL := fmt.Sprintf(kataGoConfigRawURLTemplate, releaseTag, "analysis_example.cfg")
+		fmt.Fprintf(&report, "KataGo config: would download %s\n", configURL)
+		fmt.Fprintf(&report, "KataGo config target: %s\n", env.configPath)
+	}
+
+	return report.String(), nil
+}
+
 func fetchLatestKataGoRelease(client *http.Client, url string) (*githubRelease, error) {
 	body, err := downloadBytes(client, url)
 	if err != nil {
@@ -512,31 +827,192 @@ func fetchLatestKataGoRelease(client *http.Client, url string) (*githubRelease, 
 	return &release, nil
 }
 
-func selectKataGoAsset(release *githubRelease, goos, goarch string) (*githubReleaseAsset, error) {
+func selectKataGoAsset(release *githubRelease, goos, goarch string, backends []string) (*githubReleaseAsset, string, error) {
 	target := platformAssetNeedle(goos, goarch)
 	if target == "" {
-		return nil, fmt.Errorf("automatic KataGo download is not supported for %s/%s", goos, goarch)
+		return nil, "", fmt.Errorf("automatic KataGo download is not supported for %s/%s", goos, goarch)
 	}
+	for _, candidate := range backends {
+		if asset := findKataGoAssetForBackend(release.Assets, target, candidate); asset != nil {
+			return asset, candidate, nil
+		}
+	}
+	return nil, "", fmt.Errorf(
+		"could not find a KataGo download asset for %s/%s with backend %s in release %s",
+		goos,
+		goarch,
+		strings.Join(backends, ","),
+		release.TagName,
+	)
+}
 
-	preferences := []string{"eigenavx2", "eigen", "opencl"}
-	for _, pref := range preferences {
-		for _, asset := range release.Assets {
-			name := strings.ToLower(asset.Name)
+func preferredKataGoBackends(goos, backend string) ([]string, string, error) {
+	switch backend {
+	case "", "auto":
+		nvidiaSignals := detectNVIDIABackendSignals(goos)
+		if len(nvidiaSignals) > 0 {
+			return []string{"cuda", "opencl", "cpu"}, fmt.Sprintf("detected NVIDIA/CUDA runtime via %s", strings.Join(nvidiaSignals, ", ")), nil
+		}
+		openclSignals := detectOpenCLBackendSignals(goos)
+		if len(openclSignals) > 0 {
+			return []string{"opencl", "cpu"}, fmt.Sprintf("detected OpenCL runtime via %s", strings.Join(openclSignals, ", ")), nil
+		}
+		return []string{"cpu", "opencl"}, "no GPU runtime detected", nil
+	case "cpu":
+		return []string{"cpu"}, "explicit CPU backend requested", nil
+	case "opencl":
+		return []string{"opencl", "cpu"}, "explicit OpenCL backend requested", nil
+	case "cuda":
+		return []string{"cuda", "opencl", "cpu"}, "explicit CUDA backend requested", nil
+	default:
+		return nil, "", fmt.Errorf("katago-backend must be one of: auto, cpu, opencl, cuda")
+	}
+}
+
+func normalizeBackendLabel(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "auto"
+	}
+	return value
+}
+
+const unknownKataGoBackend = "unknown"
+
+func normalizeStoredBackendLabel(value string) string {
+	return strings.TrimSpace(strings.ToLower(value))
+}
+
+func kataGoBackendMarkerPath(rootDir string) string {
+	return filepath.Join(rootDir, "bin", "backend.txt")
+}
+
+func readKataGoBackendMarker(rootDir string) string {
+	if strings.TrimSpace(rootDir) == "" {
+		return ""
+	}
+	data, err := os.ReadFile(kataGoBackendMarkerPath(rootDir))
+	if err != nil {
+		return ""
+	}
+	backend := normalizeStoredBackendLabel(string(data))
+	switch backend {
+	case "cpu", "opencl", "cuda":
+		return backend
+	default:
+		return ""
+	}
+}
+
+func writeKataGoBackendMarker(rootDir, backend string) error {
+	backend = normalizeStoredBackendLabel(backend)
+	switch backend {
+	case "cpu", "opencl", "cuda":
+		return saveBytes(kataGoBackendMarkerPath(rootDir), []byte(backend+"\n"))
+	default:
+		return nil
+	}
+}
+
+func findKataGoAssetForBackend(assets []githubReleaseAsset, target, backend string) *githubReleaseAsset {
+	for _, preference := range kataGoBackendAssetPreferences(backend) {
+		for i := range assets {
+			name := strings.ToLower(assets[i].Name)
 			if !strings.Contains(name, target) || !strings.HasSuffix(name, ".zip") {
 				continue
 			}
-			if strings.Contains(name, pref) && !strings.Contains(name, "cuda") && !strings.Contains(name, "trt") {
-				return &asset, nil
+			if kataGoAssetMatchesPreference(name, preference) {
+				return &assets[i]
 			}
 		}
 	}
-	for _, asset := range release.Assets {
-		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, target) && strings.HasSuffix(name, ".zip") {
-			return &asset, nil
+	return nil
+}
+
+func kataGoBackendAssetPreferences(backend string) []string {
+	switch backend {
+	case "cuda":
+		return []string{"cuda", "trt"}
+	case "opencl":
+		return []string{"opencl"}
+	default:
+		return []string{"eigenavx2", "eigen"}
+	}
+}
+
+func kataGoAssetMatchesPreference(name, preference string) bool {
+	switch preference {
+	case "eigenavx2":
+		return strings.Contains(name, "eigenavx2")
+	case "eigen":
+		return strings.Contains(name, "eigen") &&
+			!strings.Contains(name, "opencl") &&
+			!strings.Contains(name, "cuda") &&
+			!strings.Contains(name, "trt")
+	case "opencl":
+		return strings.Contains(name, "opencl")
+	case "cuda":
+		return strings.Contains(name, "cuda")
+	case "trt":
+		return strings.Contains(name, "trt") || strings.Contains(name, "tensorrt")
+	default:
+		return false
+	}
+}
+
+func detectNVIDIABackendSignals(goos string) []string {
+	signals := make([]string, 0, 4)
+	if path, err := exec.LookPath("nvidia-smi"); err == nil && path != "" {
+		signals = append(signals, "nvidia-smi")
+	}
+	if value := strings.TrimSpace(os.Getenv("CUDA_PATH")); value != "" {
+		signals = append(signals, "CUDA_PATH")
+	}
+	if value := strings.TrimSpace(os.Getenv("CUDA_HOME")); value != "" {
+		signals = append(signals, "CUDA_HOME")
+	}
+	if value := strings.TrimSpace(os.Getenv("NVIDIA_VISIBLE_DEVICES")); value != "" && strings.ToLower(value) != "void" {
+		signals = append(signals, "NVIDIA_VISIBLE_DEVICES")
+	}
+	switch goos {
+	case "linux":
+		if pathExists("/proc/driver/nvidia/version") {
+			signals = append(signals, "/proc/driver/nvidia/version")
+		}
+	case "windows":
+		programFiles := strings.TrimSpace(os.Getenv("ProgramFiles"))
+		if programFiles != "" && pathExists(filepath.Join(programFiles, "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe")) {
+			signals = append(signals, "NVSMI/nvidia-smi.exe")
 		}
 	}
-	return nil, fmt.Errorf("could not find a KataGo download asset for %s/%s in release %s", goos, goarch, release.TagName)
+	return dedupeStrings(signals)
+}
+
+func detectOpenCLBackendSignals(goos string) []string {
+	signals := make([]string, 0, 4)
+	if path, err := exec.LookPath("clinfo"); err == nil && path != "" {
+		signals = append(signals, "clinfo")
+	}
+	switch goos {
+	case "linux":
+		for _, candidate := range []string{
+			"/etc/OpenCL/vendors",
+			"/usr/lib/libOpenCL.so",
+			"/usr/lib64/libOpenCL.so",
+			"/usr/lib/x86_64-linux-gnu/libOpenCL.so",
+			"/usr/lib/aarch64-linux-gnu/libOpenCL.so",
+		} {
+			if pathExists(candidate) {
+				signals = append(signals, candidate)
+			}
+		}
+	case "windows":
+		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+		if systemRoot != "" && pathExists(filepath.Join(systemRoot, "System32", "OpenCL.dll")) {
+			signals = append(signals, "System32/OpenCL.dll")
+		}
+	}
+	return dedupeStrings(signals)
 }
 
 func platformAssetNeedle(goos, goarch string) string {
@@ -869,4 +1345,25 @@ func kataGoExecutableName() string {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) <= 1 {
+		return values
+	}
+	seen := make(map[string]bool, len(values))
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		ret = append(ret, value)
+	}
+	return ret
 }

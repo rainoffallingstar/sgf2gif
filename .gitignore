@@ -11,10 +11,13 @@ coverage.out
 
 # Generated exports
 *.gif
+*.katago.sgf
+/85130272-301-yrc21-rainoffallingstar1234.sgf
 
 # KataGo local logs and outputs
 gtp_logs/
 analysis_logs/
+katago/diagnostics.txt
 katago/output/
 katago/bin/
 katago/models/

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"io"
 	"math"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgsAcceptsKataGoFlags(t *testing.T) {
@@ -15,10 +19,13 @@ func TestParseArgsAcceptsKataGoFlags(t *testing.T) {
 	os.Args = []string{
 		"sgf2gif",
 		"--katago-strength", "strong",
+		"--katago-refresh",
+		"--katago-backend", "cuda",
 		"--katago-bin", "/tmp/katago",
 		"--katago-model", "/tmp/model.bin.gz",
 		"--katago-config", "/tmp/analysis.cfg",
 		"--katago-threads", "4",
+		"--katago-workers", "2",
 		"--katago-top-moves", "5",
 		"in.sgf",
 		"out.gif",
@@ -35,7 +42,16 @@ func TestParseArgsAcceptsKataGoFlags(t *testing.T) {
 	if opts.katagoStrength != "strong" {
 		t.Fatalf("katagoStrength = %q, want %q", opts.katagoStrength, "strong")
 	}
-	if opts.katagoVisits != 1000 || opts.katagoThreads != 4 || opts.katagoTopMoves != 5 {
+	if opts.katagoBackend != "cuda" {
+		t.Fatalf("katagoBackend = %q, want %q", opts.katagoBackend, "cuda")
+	}
+	if !opts.katagoRefresh {
+		t.Fatal("katagoRefresh = false, want true")
+	}
+	if opts.katagoNoCacheWrite {
+		t.Fatal("katagoNoCacheWrite = true, want false by default")
+	}
+	if opts.katagoVisits != 1000 || opts.katagoThreads != 4 || opts.katagoWorkers != 2 || opts.katagoTopMoves != 5 {
 		t.Fatalf("unexpected KataGo numeric flags: %#v", opts)
 	}
 }
@@ -63,6 +79,114 @@ func TestParseArgsExplicitVisitsOverrideStrength(t *testing.T) {
 	}
 }
 
+func TestParseArgsAcceptsKataGoCacheOnlyFlag(t *testing.T) {
+	oldArgs := os.Args
+	defer func() {
+		os.Args = oldArgs
+	}()
+
+	os.Args = []string{
+		"sgf2gif",
+		"--katago-cache-only",
+		"in.sgf",
+		"out.gif",
+	}
+
+	opts, err := parseArgs()
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if !opts.enableKataGo {
+		t.Fatal("enableKataGo = false, want true when katago-cache-only is set")
+	}
+	if !opts.katagoCacheOnly {
+		t.Fatal("katagoCacheOnly = false, want true")
+	}
+}
+
+func TestParseArgsAcceptsNoCacheWriteFlag(t *testing.T) {
+	oldArgs := os.Args
+	defer func() {
+		os.Args = oldArgs
+	}()
+
+	os.Args = []string{
+		"sgf2gif",
+		"--katago-analyze",
+		"--katago-no-cache-write",
+		"in.sgf",
+		"out.gif",
+	}
+
+	opts, err := parseArgs()
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if !opts.enableKataGo {
+		t.Fatal("enableKataGo = false, want true when katago analysis is enabled")
+	}
+	if !opts.katagoNoCacheWrite {
+		t.Fatal("katagoNoCacheWrite = false, want true")
+	}
+}
+
+func TestParseArgsRejectsNoCacheWriteWithoutAnalysisContext(t *testing.T) {
+	oldArgs := os.Args
+	defer func() {
+		os.Args = oldArgs
+	}()
+
+	os.Args = []string{
+		"sgf2gif",
+		"--katago-no-cache-write",
+		"in.sgf",
+		"out.gif",
+	}
+
+	_, err := parseArgs()
+	if err == nil {
+		t.Fatal("parseArgs returned nil error for katago-no-cache-write without analysis context")
+	}
+	if !strings.Contains(err.Error(), "katago-no-cache-write requires KataGo analysis") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsRejectsRefreshAndCacheOnlyTogether(t *testing.T) {
+	oldArgs := os.Args
+	defer func() {
+		os.Args = oldArgs
+	}()
+
+	os.Args = []string{
+		"sgf2gif",
+		"--katago-refresh",
+		"--katago-cache-only",
+		"in.sgf",
+		"out.gif",
+	}
+
+	_, err := parseArgs()
+	if err == nil {
+		t.Fatal("parseArgs returned nil error for conflicting cache flags")
+	}
+	if !strings.Contains(err.Error(), "katago-refresh cannot be combined with katago-cache-only") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestShouldWriteKataGoCache(t *testing.T) {
+	if shouldWriteKataGoCache(&options{}, nil) {
+		t.Fatal("shouldWriteKataGoCache returned true for nil analysis")
+	}
+	if !shouldWriteKataGoCache(&options{}, &analysisSeries{}) {
+		t.Fatal("shouldWriteKataGoCache returned false for normal cache write")
+	}
+	if shouldWriteKataGoCache(&options{katagoNoCacheWrite: true}, &analysisSeries{}) {
+		t.Fatal("shouldWriteKataGoCache returned true when katagoNoCacheWrite is enabled")
+	}
+}
+
 func TestParseArgsAcceptsKataGoViewFlag(t *testing.T) {
 	oldArgs := os.Args
 	defer func() {
@@ -85,6 +209,33 @@ func TestParseArgsAcceptsKataGoViewFlag(t *testing.T) {
 	}
 	if opts.katagoView != "white" {
 		t.Fatalf("katagoView = %q, want %q", opts.katagoView, "white")
+	}
+}
+
+func TestParseArgsAcceptsKataGoDetectOnlyWithoutPositionalArgs(t *testing.T) {
+	oldArgs := os.Args
+	defer func() {
+		os.Args = oldArgs
+	}()
+
+	os.Args = []string{
+		"sgf2gif",
+		"--katago-detect-only",
+		"--katago-backend", "cpu",
+	}
+
+	opts, err := parseArgs()
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if !opts.katagoDetectOnly {
+		t.Fatal("katagoDetectOnly = false, want true")
+	}
+	if opts.katagoDiagnosticsOut != filepath.Join(defaultKataGoRoot, "diagnostics.txt") {
+		t.Fatalf("katagoDiagnosticsOut = %q, want %q", opts.katagoDiagnosticsOut, filepath.Join(defaultKataGoRoot, "diagnostics.txt"))
+	}
+	if opts.inputPath != "" || opts.outputPath != "" {
+		t.Fatalf("detect-only should not require positional paths, got input=%q output=%q", opts.inputPath, opts.outputPath)
 	}
 }
 
@@ -118,6 +269,37 @@ func TestNormalizeKataGoView(t *testing.T) {
 	}
 }
 
+func TestNormalizeKataGoBackend(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "", want: "auto"},
+		{input: "auto", want: "auto"},
+		{input: "CPU", want: "cpu"},
+		{input: " opencl ", want: "opencl"},
+		{input: "cuda", want: "cuda"},
+		{input: "metal", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := normalizeKataGoBackend(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("normalizeKataGoBackend(%q) returned nil error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("normalizeKataGoBackend(%q) returned error: %v", tt.input, err)
+		}
+		if got != tt.want {
+			t.Fatalf("normalizeKataGoBackend(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestKataGoVisitsForStrength(t *testing.T) {
 	tests := map[string]int{
 		"mild":    50,
@@ -136,21 +318,166 @@ func TestKataGoVisitsForStrength(t *testing.T) {
 	}
 }
 
-func TestSelectKataGoAssetPrefersEigen(t *testing.T) {
+func TestSelectKataGoAssetPrefersEigenForCPU(t *testing.T) {
 	release := &githubRelease{
 		TagName: "v1.16.4",
 		Assets: []githubReleaseAsset{
 			{Name: "katago-v1.16.4-opencl-linux-x64.zip", URL: "opencl"},
 			{Name: "katago-v1.16.4-eigenavx2-linux-x64.zip", URL: "eigenavx2"},
+			{Name: "katago-v1.16.4-cuda-linux-x64.zip", URL: "cuda"},
 		},
 	}
 
-	asset, err := selectKataGoAsset(release, "linux", "amd64")
+	asset, backend, err := selectKataGoAsset(release, "linux", "amd64", []string{"cpu"})
 	if err != nil {
 		t.Fatalf("selectKataGoAsset returned error: %v", err)
 	}
+	if backend != "cpu" {
+		t.Fatalf("selected backend = %q, want %q", backend, "cpu")
+	}
 	if asset.URL != "eigenavx2" {
 		t.Fatalf("selected asset URL = %q, want %q", asset.URL, "eigenavx2")
+	}
+}
+
+func TestSelectKataGoAssetPrefersCUDAWhenRequested(t *testing.T) {
+	release := &githubRelease{
+		TagName: "v1.16.4",
+		Assets: []githubReleaseAsset{
+			{Name: "katago-v1.16.4-opencl-linux-x64.zip", URL: "opencl"},
+			{Name: "katago-v1.16.4-cuda-linux-x64.zip", URL: "cuda"},
+			{Name: "katago-v1.16.4-eigen-linux-x64.zip", URL: "eigen"},
+		},
+	}
+
+	asset, backend, err := selectKataGoAsset(release, "linux", "amd64", []string{"cuda", "opencl", "cpu"})
+	if err != nil {
+		t.Fatalf("selectKataGoAsset returned error: %v", err)
+	}
+	if backend != "cuda" {
+		t.Fatalf("selected backend = %q, want %q", backend, "cuda")
+	}
+	if asset.URL != "cuda" {
+		t.Fatalf("selected asset URL = %q, want %q", asset.URL, "cuda")
+	}
+}
+
+func TestSelectKataGoAssetFallsBackFromOpenCLToCPU(t *testing.T) {
+	release := &githubRelease{
+		TagName: "v1.16.4",
+		Assets: []githubReleaseAsset{
+			{Name: "katago-v1.16.4-eigen-linux-x64.zip", URL: "eigen"},
+		},
+	}
+
+	asset, backend, err := selectKataGoAsset(release, "linux", "amd64", []string{"opencl", "cpu"})
+	if err != nil {
+		t.Fatalf("selectKataGoAsset returned error: %v", err)
+	}
+	if backend != "cpu" {
+		t.Fatalf("selected backend = %q, want %q", backend, "cpu")
+	}
+	if asset.URL != "eigen" {
+		t.Fatalf("selected asset URL = %q, want %q", asset.URL, "eigen")
+	}
+}
+
+func TestPreferredKataGoBackendsExplicitOpenCLFallsBackToCPU(t *testing.T) {
+	backends, reason, err := preferredKataGoBackends("linux", "opencl")
+	if err != nil {
+		t.Fatalf("preferredKataGoBackends returned error: %v", err)
+	}
+	if len(backends) != 2 || backends[0] != "opencl" || backends[1] != "cpu" {
+		t.Fatalf("unexpected backends: %#v", backends)
+	}
+	if reason != "explicit OpenCL backend requested" {
+		t.Fatalf("unexpected reason: %q", reason)
+	}
+}
+
+func TestPreferredKataGoBackendsAutoReportsDetectedSignals(t *testing.T) {
+	oldCUDAHome := os.Getenv("CUDA_HOME")
+	defer func() {
+		if oldCUDAHome == "" {
+			_ = os.Unsetenv("CUDA_HOME")
+			return
+		}
+		_ = os.Setenv("CUDA_HOME", oldCUDAHome)
+	}()
+
+	if err := os.Setenv("CUDA_HOME", "/tmp/fake-cuda"); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+
+	backends, reason, err := preferredKataGoBackends("linux", "auto")
+	if err != nil {
+		t.Fatalf("preferredKataGoBackends returned error: %v", err)
+	}
+	if len(backends) != 3 || backends[0] != "cuda" {
+		t.Fatalf("unexpected backends: %#v", backends)
+	}
+	if !strings.Contains(reason, "CUDA_HOME") {
+		t.Fatalf("expected reason to mention CUDA_HOME, got %q", reason)
+	}
+}
+
+func TestDetectKataGoSetupReportsExistingFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "katago")
+	modelPath := filepath.Join(tmpDir, "model.bin.gz")
+	configPath := filepath.Join(tmpDir, "analysis.cfg")
+	diagnosticsPath := filepath.Join(tmpDir, "diagnostics.txt")
+	for _, path := range []string{binPath, modelPath, configPath} {
+		if err := os.WriteFile(path, []byte("stub"), 0o755); err != nil {
+			t.Fatalf("WriteFile(%q) returned error: %v", path, err)
+		}
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe returned error: %v", err)
+	}
+	os.Stdout = w
+
+	runErr := detectKataGoSetup(katagoOptions{
+		binPath:        binPath,
+		modelPath:      modelPath,
+		configPath:     configPath,
+		diagnosticsOut: diagnosticsPath,
+		backend:        "cpu",
+	})
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+	output, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatalf("ReadAll returned error: %v", readErr)
+	}
+	if runErr != nil {
+		t.Fatalf("detectKataGoSetup returned error: %v", runErr)
+	}
+
+	text := string(output)
+	for _, want := range []string{
+		"KataGo detect-only mode",
+		"KataGo backend preference: cpu -> cpu (explicit CPU backend requested)",
+		"KataGo binary: existing file at " + binPath,
+		"KataGo model: existing file at " + modelPath,
+		"KataGo config: existing file at " + configPath,
+		"KataGo diagnostics saved to " + diagnosticsPath,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, text)
+		}
+	}
+	saved, err := os.ReadFile(diagnosticsPath)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !strings.Contains(string(saved), "KataGo detect-only mode") {
+		t.Fatalf("saved diagnostics missing detect-only header: %q", string(saved))
 	}
 }
 
@@ -180,10 +507,79 @@ func TestParseGTPMove(t *testing.T) {
 	}
 }
 
+func TestFormatKataGoDuration(t *testing.T) {
+	if got := formatKataGoDuration(75 * time.Second); got != "01:15" {
+		t.Fatalf("formatKataGoDuration = %q, want %q", got, "01:15")
+	}
+}
+
+func TestPrintAnalysisProgressIncludesElapsedAndETA(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe returned error: %v", err)
+	}
+	os.Stdout = w
+
+	printAnalysisProgress(2, 4, time.Now().Add(-30*time.Second))
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+	output, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	text := string(output)
+	if !strings.Contains(text, "elapsed") || !strings.Contains(text, "eta") {
+		t.Fatalf("progress output missing elapsed/eta: %q", text)
+	}
+}
+
 func TestSelectRenderLayoutAddsAnalysisPanel(t *testing.T) {
 	layout := selectRenderLayout(nil, true)
 	if layout.analysisHeight != analysisHeight {
 		t.Fatalf("analysisHeight = %d, want %d", layout.analysisHeight, analysisHeight)
+	}
+}
+
+func TestBuildKataGoWorkerPlansSplitsQueriesAndThreads(t *testing.T) {
+	queries := []katagoAnalysisQuery{
+		{ID: "q0"},
+		{ID: "q1"},
+		{ID: "q2"},
+		{ID: "q3"},
+		{ID: "q4"},
+	}
+
+	plans := buildKataGoWorkerPlans(queries, 2, 5)
+	if len(plans) != 2 {
+		t.Fatalf("got %d worker plans, want 2", len(plans))
+	}
+	if len(plans[0].queries) != 3 || len(plans[1].queries) != 2 {
+		t.Fatalf("unexpected query split: %#v", plans)
+	}
+	if plans[0].threads != 3 || plans[1].threads != 2 {
+		t.Fatalf("unexpected thread split: %#v", plans)
+	}
+	if plans[0].queries[0].ID != "q0" || plans[1].queries[0].ID != "q3" {
+		t.Fatalf("unexpected query order in plans: %#v", plans)
+	}
+}
+
+func TestBuildKataGoWorkerPlansCapsWorkersByThreads(t *testing.T) {
+	queries := []katagoAnalysisQuery{
+		{ID: "q0"},
+		{ID: "q1"},
+		{ID: "q2"},
+	}
+
+	plans := buildKataGoWorkerPlans(queries, 5, 2)
+	if len(plans) != 2 {
+		t.Fatalf("got %d worker plans, want 2", len(plans))
+	}
+	if plans[0].threads < 1 || plans[1].threads < 1 {
+		t.Fatalf("worker threads must stay positive: %#v", plans)
 	}
 }
 

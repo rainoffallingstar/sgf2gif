@@ -1,4 +1,4 @@
-module github.com/alcortesm/sgf2gif
+module github.com/rainoffallingstar/sgf2gif
 
 go 1.26
 
