@@ -20,17 +20,19 @@ const (
 )
 
 type cachedPositionAnalysis struct {
-	Winrate       float64              `json:"winrate"`
-	ScoreLead     float64              `json:"scoreLead"`
-	Visits        int                  `json:"visits"`
-	TopMoves      []cachedAnalysisMove `json:"topMoves,omitempty"`
-	PlayedMove    string               `json:"playedMove,omitempty"`
-	BestMove      string               `json:"bestMove,omitempty"`
-	MoveLoss      float64              `json:"moveLoss,omitempty"`
-	LossKnown     bool                 `json:"lossKnown,omitempty"`
-	BestWinrate   float64              `json:"bestWinrate,omitempty"`
-	ActualWinrate float64              `json:"actualWinrate,omitempty"`
-	WinrateGap    float64              `json:"winrateGap,omitempty"`
+	Winrate        float64              `json:"winrate"`
+	ScoreLead      float64              `json:"scoreLead"`
+	Visits         int                  `json:"visits"`
+	TopMoves       []cachedAnalysisMove `json:"topMoves,omitempty"`
+	PlayedMove     string               `json:"playedMove,omitempty"`
+	PlayedHit      bool                 `json:"playedHit,omitempty"`
+	PlayedHitKnown bool                 `json:"playedHitKnown,omitempty"`
+	BestMove       string               `json:"bestMove,omitempty"`
+	MoveLoss       float64              `json:"moveLoss,omitempty"`
+	LossKnown      bool                 `json:"lossKnown,omitempty"`
+	BestWinrate    float64              `json:"bestWinrate,omitempty"`
+	ActualWinrate  float64              `json:"actualWinrate,omitempty"`
+	WinrateGap     float64              `json:"winrateGap,omitempty"`
 }
 
 type cachedAnalysisMove struct {
@@ -96,16 +98,18 @@ func cachedAnalysisFromGame(g *sgf.GameTree, boardSize int, variationPath []int)
 			return nil, fmt.Errorf("failed to parse cached KataGo analysis: %w", err)
 		}
 		frame := positionAnalysis{
-			winrate:       cached.Winrate,
-			scoreLead:     cached.ScoreLead,
-			visits:        cached.Visits,
-			playedMove:    cached.PlayedMove,
-			bestMove:      cached.BestMove,
-			moveLoss:      cached.MoveLoss,
-			lossKnown:     cached.LossKnown,
-			bestWinrate:   cached.BestWinrate,
-			actualWinrate: cached.ActualWinrate,
-			winrateGap:    cached.WinrateGap,
+			winrate:        cached.Winrate,
+			scoreLead:      cached.ScoreLead,
+			visits:         cached.Visits,
+			playedMove:     cached.PlayedMove,
+			playedHit:      cached.PlayedHit,
+			playedHitKnown: cached.PlayedHitKnown,
+			bestMove:       cached.BestMove,
+			moveLoss:       cached.MoveLoss,
+			lossKnown:      cached.LossKnown,
+			bestWinrate:    cached.BestWinrate,
+			actualWinrate:  cached.ActualWinrate,
+			winrateGap:     cached.WinrateGap,
 		}
 		for _, move := range cached.TopMoves {
 			frame.topMoves = append(frame.topMoves, analysisMove{
@@ -164,6 +168,11 @@ func canReuseCachedAnalysis(cached *analysisSeries, opts katagoOptions) (bool, s
 	}
 	if cached.cacheMeta == nil {
 		return false, "cache metadata unavailable"
+	}
+	for _, frame := range cached.frames {
+		if frame.playedMove != "" && !frame.playedHitKnown {
+			return false, "cache missing played-hit stats; rerun KataGo to upgrade cache"
+		}
 	}
 	if cached.cacheMeta.MaxVisits < opts.maxVisits {
 		return false, fmt.Sprintf("cache maxVisits=%d is lower than requested %d", cached.cacheMeta.MaxVisits, opts.maxVisits)
@@ -502,16 +511,18 @@ func annotatedSGFPath(outputPath string) string {
 
 func encodeCachedPositionAnalysis(frame positionAnalysis) (string, error) {
 	cached := cachedPositionAnalysis{
-		Winrate:       frame.winrate,
-		ScoreLead:     frame.scoreLead,
-		Visits:        frame.visits,
-		PlayedMove:    frame.playedMove,
-		BestMove:      frame.bestMove,
-		MoveLoss:      frame.moveLoss,
-		LossKnown:     frame.lossKnown,
-		BestWinrate:   frame.bestWinrate,
-		ActualWinrate: frame.actualWinrate,
-		WinrateGap:    frame.winrateGap,
+		Winrate:        frame.winrate,
+		ScoreLead:      frame.scoreLead,
+		Visits:         frame.visits,
+		PlayedMove:     frame.playedMove,
+		PlayedHit:      frame.playedHit,
+		PlayedHitKnown: frame.playedHitKnown,
+		BestMove:       frame.bestMove,
+		MoveLoss:       frame.moveLoss,
+		LossKnown:      frame.lossKnown,
+		BestWinrate:    frame.bestWinrate,
+		ActualWinrate:  frame.actualWinrate,
+		WinrateGap:     frame.winrateGap,
 	}
 	for _, move := range frame.topMoves {
 		cached.TopMoves = append(cached.TopMoves, cachedAnalysisMove{

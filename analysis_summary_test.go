@@ -95,3 +95,20 @@ func TestBuildAnalysisSummaryCountsPhasesAndCategories(t *testing.T) {
 		t.Fatalf("unexpected phase pressure verdict: %q", verdict)
 	}
 }
+
+func TestRecommendationHitPrefersPlayedHitWhenKnown(t *testing.T) {
+	frame := positionAnalysis{
+		playedMove:     "A9",
+		playedHit:      true,
+		playedHitKnown: true,
+		topMoves:       []analysisMove{{move: "B8"}},
+	}
+	if !frame.recommendationHit() {
+		t.Fatal("expected recommendationHit=true when playedHit is known true")
+	}
+
+	frame.playedHit = false
+	if frame.recommendationHit() {
+		t.Fatal("expected recommendationHit=false when playedHit is known false")
+	}
+}

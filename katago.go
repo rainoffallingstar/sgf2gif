@@ -61,17 +61,19 @@ type analysisSeries struct {
 }
 
 type positionAnalysis struct {
-	winrate       float64
-	scoreLead     float64
-	visits        int
-	topMoves      []analysisMove
-	playedMove    string
-	bestMove      string
-	moveLoss      float64
-	lossKnown     bool
-	bestWinrate   float64
-	actualWinrate float64
-	winrateGap    float64
+	winrate        float64
+	scoreLead      float64
+	visits         int
+	topMoves       []analysisMove
+	playedMove     string
+	playedHit      bool
+	playedHitKnown bool
+	bestMove       string
+	moveLoss       float64
+	lossKnown      bool
+	bestWinrate    float64
+	actualWinrate  float64
+	winrateGap     float64
 }
 
 type decisionQueryRef struct {
@@ -191,7 +193,7 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 	if err != nil {
 		return nil, err
 	}
-	applyDecisionAnalysis(frames, decisions, results)
+	applyDecisionAnalysis(frames, decisions, results, opts.topMoves)
 	series := &analysisSeries{frames: frames}
 	series.diagnostics, _ = buildKataGoDiagnosticsReport(opts)
 	series.cacheMeta = buildKataGoCacheMetadata(opts, env.resolvedBackend)
@@ -1346,7 +1348,10 @@ func rootScoreForPlayer(scoreLead float64, toPlay uint8) float64 {
 	return scoreLead
 }
 
-func applyDecisionAnalysis(frames []positionAnalysis, decisions []decisionQueryRef, results map[string]katagoAnalysisResponse) {
+func applyDecisionAnalysis(frames []positionAnalysis, decisions []decisionQueryRef, results map[string]katagoAnalysisResponse, topMoves int) {
+	if topMoves <= 0 {
+		topMoves = 1
+	}
 	for _, decision := range decisions {
 		resp, ok := results[decision.id()]
 		if !ok || decision.frameIndex < 0 || decision.frameIndex >= len(frames) || decision.move == nil {
@@ -1355,6 +1360,25 @@ func applyDecisionAnalysis(frames []positionAnalysis, decisions []decisionQueryR
 		played := moveToGTP(decision.move, decision.before.size)
 		best := bestMoveByPlayer(resp.MoveInfos, decision.before.toPlay)
 		frames[decision.frameIndex].playedMove = played
+		frames[decision.frameIndex].playedHitKnown = true
+		frames[decision.frameIndex].playedHit = false
+		moveInfos := append([]katagoMoveInfo(nil), resp.MoveInfos...)
+		sort.SliceStable(moveInfos, func(i, j int) bool {
+			if moveInfos[i].Order == moveInfos[j].Order {
+				return moveInfos[i].Visits > moveInfos[j].Visits
+			}
+			return moveInfos[i].Order < moveInfos[j].Order
+		})
+		playedNorm := strings.ToUpper(strings.TrimSpace(played))
+		for i, moveInfo := range moveInfos {
+			if i >= topMoves {
+				break
+			}
+			if strings.ToUpper(strings.TrimSpace(moveInfo.Move)) == playedNorm {
+				frames[decision.frameIndex].playedHit = true
+				break
+			}
+		}
 		frames[decision.frameIndex].bestMove = best.Move
 		if best.Move == "" {
 			continue

@@ -725,7 +725,7 @@ func TestApplyDecisionAnalysisUsesFrameRootForActualMoveLoss(t *testing.T) {
 		},
 	}
 
-	applyDecisionAnalysis(frames, decisions, results)
+	applyDecisionAnalysis(frames, decisions, results, 3)
 
 	if frames[0].playedMove != "A9" {
 		t.Fatalf("playedMove = %q, want %q", frames[0].playedMove, "A9")

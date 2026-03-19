@@ -240,6 +240,40 @@ func TestCanReuseCachedAnalysis(t *testing.T) {
 	}
 }
 
+func TestCanReuseCachedAnalysisRejectsMissingPlayedHitStats(t *testing.T) {
+	cached := &analysisSeries{
+		cacheMeta: &katagoCacheMetadata{
+			Backend:   "cpu",
+			MaxVisits: 1000,
+			TopMoves:  5,
+		},
+		frames: []positionAnalysis{
+			{playedMove: "A9"},
+		},
+	}
+	reuse, reason := canReuseCachedAnalysis(cached, katagoOptions{
+		backend:   "auto",
+		maxVisits: 500,
+		topMoves:  3,
+	})
+	if reuse {
+		t.Fatalf("expected cache refresh, got reuse (%s)", reason)
+	}
+	if !strings.Contains(reason, "played-hit") {
+		t.Fatalf("unexpected reject reason: %q", reason)
+	}
+
+	cached.frames[0].playedHitKnown = true
+	reuse, reason = canReuseCachedAnalysis(cached, katagoOptions{
+		backend:   "auto",
+		maxVisits: 500,
+		topMoves:  3,
+	})
+	if !reuse {
+		t.Fatalf("expected cache reuse, got false (%s)", reason)
+	}
+}
+
 func TestCanReuseCachedAnalysisRejectsWeakerVisits(t *testing.T) {
 	cached := &analysisSeries{
 		cacheMeta: &katagoCacheMetadata{

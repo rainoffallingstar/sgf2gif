@@ -102,6 +102,10 @@ func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysis
 		categories: categories,
 		totalMoves: len(moveIndexes),
 	}
+	fixedTopMoves := analysis.cacheMeta != nil && analysis.cacheMeta.TopMoves > 0
+	if fixedTopMoves {
+		summary.topMoveCount = analysis.cacheMeta.TopMoves
+	}
 	blackStreak := 0
 	whiteStreak := 0
 	for moveOrdinal, frameIndex := range moveIndexes {
@@ -139,7 +143,7 @@ func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysis
 			summary.blackHitStreak = *streak
 		}
 		*categoryCounter = *categoryCounter + 1
-		if len(frame.topMoves) > summary.topMoveCount {
+		if !fixedTopMoves && len(frame.topMoves) > summary.topMoveCount {
 			summary.topMoveCount = len(frame.topMoves)
 		}
 		if frame.lossKnown {
@@ -262,6 +266,9 @@ func (s *analysisSummary) maxCategoryCount() int {
 func (p positionAnalysis) recommendationHit() bool {
 	if p.playedMove == "" {
 		return false
+	}
+	if p.playedHitKnown {
+		return p.playedHit
 	}
 	for _, move := range p.topMoves {
 		if move.move == p.playedMove {
