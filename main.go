@@ -601,7 +601,7 @@ func movesFromGame(g *sgf.GameTree, boardSize int) ([]*move, error) {
 }
 
 func actionsFromGame(g *sgf.GameTree, boardSize int, variationPath []int) ([]*action, error) {
-	actions, branchDepth, err := actionsFromGameAtDepth(g, boardSize, variationPath, 0)
+	actions, branchDepth, err := actionsFromGameAtDepth(g, boardSize, variationPath, 0, true)
 	if err != nil {
 		return nil, err
 	}
@@ -611,14 +611,14 @@ func actionsFromGame(g *sgf.GameTree, boardSize int, variationPath []int) ([]*ac
 	return actions, nil
 }
 
-func actionsFromGameAtDepth(g *sgf.GameTree, boardSize int, variationPath []int, branchDepth int) ([]*action, int, error) {
+func actionsFromGameAtDepth(g *sgf.GameTree, boardSize int, variationPath []int, branchDepth int, isRoot bool) ([]*action, int, error) {
 	ret := []*action{}
-	for _, n := range g.Nodes {
+	for i, n := range g.Nodes {
 		a, hasEffect, err := actionFromNode(n, boardSize)
 		if err != nil {
 			return nil, branchDepth, err
 		}
-		if hasEffect {
+		if hasEffect && cacheNodeHasFrameEffect(a, isRoot && i == 0) {
 			ret = append(ret, a)
 		}
 	}
@@ -627,7 +627,7 @@ func actionsFromGameAtDepth(g *sgf.GameTree, boardSize int, variationPath []int,
 	case 0:
 		return ret, branchDepth, nil
 	case 1:
-		childActions, consumed, err := actionsFromGameAtDepth(g.GameTrees[0], boardSize, variationPath, branchDepth)
+		childActions, consumed, err := actionsFromGameAtDepth(g.GameTrees[0], boardSize, variationPath, branchDepth, false)
 		if err != nil {
 			return nil, consumed, err
 		}
@@ -644,7 +644,7 @@ func actionsFromGameAtDepth(g *sgf.GameTree, boardSize int, variationPath []int,
 
 	log.Printf("found %d variations at branch %d: using #%d", len(g.GameTrees), branchDepth+1, selected+1)
 
-	childActions, consumed, err := actionsFromGameAtDepth(g.GameTrees[selected], boardSize, variationPath, branchDepth+1)
+	childActions, consumed, err := actionsFromGameAtDepth(g.GameTrees[selected], boardSize, variationPath, branchDepth+1, false)
 	if err != nil {
 		return nil, consumed, err
 	}

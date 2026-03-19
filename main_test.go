@@ -123,6 +123,24 @@ func TestActionsToFramesAppendsSummaryFrameWhenAnalysisExists(t *testing.T) {
 	}
 }
 
+func TestActionsFromGameSkipsRootCommentOnlyNode(t *testing.T) {
+	game := mustParseGameTree(t, "(;FF[4]GM[1]SZ[9]C[sgf2gif KataGo summary\\nplatform=linux/amd64];B[aa];W[bb])")
+
+	actions, err := actionsFromGame(game, 9, nil)
+	if err != nil {
+		t.Fatalf("actionsFromGame returned error: %v", err)
+	}
+	if got, want := len(actions), 2; got != want {
+		t.Fatalf("action count = %d, want %d", got, want)
+	}
+	if actions[0].move == nil || actions[0].move.white {
+		t.Fatalf("first action = %#v, want black move", actions[0])
+	}
+	if actions[1].move == nil || !actions[1].move.white {
+		t.Fatalf("second action = %#v, want white move", actions[1])
+	}
+}
+
 func TestParseArgsAcceptsMoveNumbersFlag(t *testing.T) {
 	oldArgs := os.Args
 	defer func() {

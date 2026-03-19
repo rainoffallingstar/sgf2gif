@@ -44,11 +44,6 @@ func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
 	if layout.analysisHeight <= 0 {
 		return
 	}
-	current := cfg.analysis.frameAt(cfg.currentFrame)
-	if current == nil {
-		return
-	}
-
 	panelTop := img.Bounds().Dy() - layout.analysisHeight
 	panelLeft := textPadding
 	panelRight := img.Bounds().Dx() - textPadding - 1
@@ -59,6 +54,11 @@ func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
 
 	if cfg.summaryFrame && cfg.analysis.summary != nil {
 		drawAnalysisSummaryPanel(img, panelLeft, panelTop, panelRight, panelBottom, cfg.analysis.summary)
+		return
+	}
+
+	current := cfg.analysis.frameAt(cfg.currentFrame)
+	if current == nil {
 		return
 	}
 

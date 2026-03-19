@@ -57,3 +57,48 @@ func TestRecommendationCenterDotUsesToPlayColor(t *testing.T) {
 		})
 	}
 }
+
+func TestDrawAnalysisPanelRendersSummaryWhenCurrentFrameIsOutOfRange(t *testing.T) {
+	img := image.NewPaletted(image.Rect(0, 0, 900, compactInfoHeight+side(19)+2*coordMargin+analysisHeight), palette)
+	fill(img, background)
+
+	cfg := renderConfig{
+		layout:       renderLayout{infoHeight: compactInfoHeight, analysisHeight: analysisHeight},
+		currentFrame: 3,
+		summaryFrame: true,
+		analysis: &analysisSeries{
+			frames: []positionAnalysis{
+				{winrate: 0.5},
+			},
+			summary: &analysisSummary{
+				phases: []phaseSummary{
+					{label: "Opening"},
+					{label: "Middlegame"},
+					{label: "Endgame"},
+				},
+				categories: []categorySummary{
+					{label: "Good"},
+				},
+				totalMoves:   1,
+				topMoveCount: 3,
+			},
+		},
+	}
+
+	drawAnalysisPanel(img, cfg)
+
+	foundSummaryInk := false
+	panelTop := img.Bounds().Dy() - analysisHeight
+	for y := panelTop; y < img.Bounds().Dy() && !foundSummaryInk; y++ {
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			colorIndex := img.ColorIndexAt(x, y)
+			if colorIndex != background && colorIndex != gridLine {
+				foundSummaryInk = true
+				break
+			}
+		}
+	}
+	if !foundSummaryInk {
+		t.Fatal("expected summary panel to render visible content even when currentFrame is out of range")
+	}
+}
