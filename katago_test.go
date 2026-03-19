@@ -397,15 +397,30 @@ func TestPreferredKataGoBackendsExplicitOpenCLFallsBackToCPU(t *testing.T) {
 
 func TestPreferredKataGoBackendsAutoReportsDetectedSignals(t *testing.T) {
 	oldCUDAHome := os.Getenv("CUDA_HOME")
+	oldLDLibraryPath := os.Getenv("LD_LIBRARY_PATH")
 	defer func() {
 		if oldCUDAHome == "" {
 			_ = os.Unsetenv("CUDA_HOME")
-			return
+		} else {
+			_ = os.Setenv("CUDA_HOME", oldCUDAHome)
 		}
-		_ = os.Setenv("CUDA_HOME", oldCUDAHome)
+		if oldLDLibraryPath == "" {
+			_ = os.Unsetenv("LD_LIBRARY_PATH")
+		} else {
+			_ = os.Setenv("LD_LIBRARY_PATH", oldLDLibraryPath)
+		}
 	}()
 
 	if err := os.Setenv("CUDA_HOME", "/tmp/fake-cuda"); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	cudnnPath := filepath.Join(tmpDir, "libcudnn.so.8")
+	if err := os.WriteFile(cudnnPath, []byte("stub"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) returned error: %v", cudnnPath, err)
+	}
+	if err := os.Setenv("LD_LIBRARY_PATH", tmpDir); err != nil {
 		t.Fatalf("Setenv returned error: %v", err)
 	}
 

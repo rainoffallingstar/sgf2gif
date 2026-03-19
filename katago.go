@@ -455,7 +455,12 @@ func runSingleKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuer
 		return nil, fmt.Errorf("%w\n%s", firstErr, strings.TrimSpace(stderrBuf.String()))
 	}
 	if waitErr != nil {
-		return nil, fmt.Errorf("katago exited with error: %w\n%s", waitErr, strings.TrimSpace(stderrBuf.String()))
+		stderrText := strings.TrimSpace(stderrBuf.String())
+		hint := ""
+		if strings.Contains(stderrText, "libcudnn.so.8") {
+			hint = "\n\nHint: your KataGo binary requires cuDNN (libcudnn.so.8). On Colab, either install cuDNN or rerun with --katago-backend cpu."
+		}
+		return nil, fmt.Errorf("katago exited with error: %w\n%s%s", waitErr, stderrText, hint)
 	}
 	if len(responses) == 0 {
 		message := strings.TrimSpace(stderrBuf.String())
@@ -577,6 +582,7 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 		opts.networksPage = kataGoNetworksURL
 	}
 
+	managedBinary := opts.binPath == ""
 	rootDir := opts.rootDir
 	env := katagoEnvironment{
 		binPath:         opts.binPath,
@@ -599,6 +605,63 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 		env.releaseTag = tag
 		if backend := readKataGoBackendMarker(rootDir); backend != "" {
 			env.resolvedBackend = backend
+		}
+		if managedBinary && env.resolvedBackend != unknownKataGoBackend {
+			backends, _, err := preferredKataGoBackends(runtime.GOOS, opts.backend)
+			if err != nil {
+				return env, err
+			}
+			found := false
+			for _, candidate := range backends {
+				if candidate == env.resolvedBackend {
+					found = true
+					break
+				}
+			}
+			if !found {
+				_ = os.Remove(env.binPath)
+				_ = os.Remove(kataGoBackendMarkerPath(rootDir))
+				env.releaseTag = ""
+				env.resolvedBackend = unknownKataGoBackend
+			}
+		}
+		if managedBinary && !fileExists(env.binPath) {
+			if path, err := exec.LookPath("katago"); err == nil {
+				env.binPath = path
+				tag, _ := detectKataGoVersionTag(env.binPath)
+				env.releaseTag = tag
+			} else {
+				switch runtime.GOOS {
+				case "darwin":
+					return env, fmt.Errorf("KataGo is not installed. On macOS, install it with `brew install katago`")
+				case "linux", "windows":
+					release, err := fetchLatestKataGoRelease(opts.httpClient, opts.releaseAPI)
+					if err != nil {
+						return env, err
+					}
+					backends, _, err := preferredKataGoBackends(runtime.GOOS, opts.backend)
+					if err != nil {
+						return env, err
+					}
+					asset, resolvedBackend, err := selectKataGoAsset(release, runtime.GOOS, runtime.GOARCH, backends)
+					if err != nil {
+						return env, err
+					}
+					if err := os.MkdirAll(filepath.Dir(env.binPath), 0o755); err != nil {
+						return env, err
+					}
+					if err := downloadAndExtractKataGoBinary(opts.httpClient, asset.URL, env.binPath); err != nil {
+						return env, err
+					}
+					env.releaseTag = release.TagName
+					env.resolvedBackend = resolvedBackend
+					if err := writeKataGoBackendMarker(rootDir, resolvedBackend); err != nil {
+						return env, err
+					}
+				default:
+					return env, fmt.Errorf("automatic KataGo download is not supported on %s", runtime.GOOS)
+				}
+			}
 		}
 	} else if opts.binPath != "" {
 		return env, fmt.Errorf("KataGo binary not found: %s", env.binPath)
@@ -851,7 +914,11 @@ func preferredKataGoBackends(goos, backend string) ([]string, string, error) {
 	case "", "auto":
 		nvidiaSignals := detectNVIDIABackendSignals(goos)
 		if len(nvidiaSignals) > 0 {
-			return []string{"cuda", "opencl", "cpu"}, fmt.Sprintf("detected NVIDIA/CUDA runtime via %s", strings.Join(nvidiaSignals, ", ")), nil
+			cudnnSignals := detectCUDNNBackendSignals(goos)
+			if len(cudnnSignals) > 0 {
+				return []string{"cuda", "opencl", "cpu"}, fmt.Sprintf("detected NVIDIA/CUDA runtime via %s and cuDNN via %s", strings.Join(nvidiaSignals, ", "), strings.Join(cudnnSignals, ", ")), nil
+			}
+			return []string{"cpu", "opencl"}, fmt.Sprintf("detected NVIDIA/CUDA runtime via %s but cuDNN (libcudnn.so.8) was not detected", strings.Join(nvidiaSignals, ", ")), nil
 		}
 		openclSignals := detectOpenCLBackendSignals(goos)
 		if len(openclSignals) > 0 {
@@ -962,8 +1029,10 @@ func kataGoAssetMatchesPreference(name, preference string) bool {
 
 func detectNVIDIABackendSignals(goos string) []string {
 	signals := make([]string, 0, 4)
-	if path, err := exec.LookPath("nvidia-smi"); err == nil && path != "" {
-		signals = append(signals, "nvidia-smi")
+	if runtime.GOOS == goos {
+		if path, err := exec.LookPath("nvidia-smi"); err == nil && path != "" {
+			signals = append(signals, "nvidia-smi")
+		}
 	}
 	if value := strings.TrimSpace(os.Getenv("CUDA_PATH")); value != "" {
 		signals = append(signals, "CUDA_PATH")
@@ -988,10 +1057,57 @@ func detectNVIDIABackendSignals(goos string) []string {
 	return dedupeStrings(signals)
 }
 
+func detectCUDNNBackendSignals(goos string) []string {
+	signals := make([]string, 0, 4)
+
+	ldLibraryPath := strings.TrimSpace(os.Getenv("LD_LIBRARY_PATH"))
+	if ldLibraryPath != "" {
+		for _, entry := range strings.Split(ldLibraryPath, string(os.PathListSeparator)) {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if fileExists(filepath.Join(entry, "libcudnn.so.8")) {
+				signals = append(signals, "LD_LIBRARY_PATH")
+				break
+			}
+		}
+	}
+
+	switch goos {
+	case "linux":
+		for _, candidate := range []string{
+			"/usr/lib/x86_64-linux-gnu/libcudnn.so.8",
+			"/usr/lib/aarch64-linux-gnu/libcudnn.so.8",
+			"/usr/lib64/libcudnn.so.8",
+			"/usr/lib/libcudnn.so.8",
+			"/usr/local/cuda/lib64/libcudnn.so.8",
+		} {
+			if fileExists(candidate) {
+				signals = append(signals, candidate)
+			}
+		}
+
+		if runtime.GOOS == "linux" {
+			if path, err := exec.LookPath("ldconfig"); err == nil && path != "" {
+				cmd := exec.Command(path, "-p")
+				output, err := cmd.Output()
+				if err == nil && strings.Contains(string(output), "libcudnn.so.8") {
+					signals = append(signals, "ldconfig")
+				}
+			}
+		}
+	}
+
+	return dedupeStrings(signals)
+}
+
 func detectOpenCLBackendSignals(goos string) []string {
 	signals := make([]string, 0, 4)
-	if path, err := exec.LookPath("clinfo"); err == nil && path != "" {
-		signals = append(signals, "clinfo")
+	if runtime.GOOS == goos {
+		if path, err := exec.LookPath("clinfo"); err == nil && path != "" {
+			signals = append(signals, "clinfo")
+		}
 	}
 	switch goos {
 	case "linux":
