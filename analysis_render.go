@@ -36,40 +36,6 @@ func drawAnalysisRecommendations(img *image.Paletted, state *boardState, cfg ren
 	}
 }
 
-func drawAnalysisNextMoveArrow(img *image.Paletted, state *boardState, current *action, cfg renderConfig) {
-	if current == nil || current.move == nil || current.move.pass || cfg.summaryFrame {
-		return
-	}
-	frame := cfg.analysis.frameAt(cfg.currentFrame)
-	if frame == nil || len(frame.topMoves) == 0 {
-		return
-	}
-
-	var move *analysisMove
-	for i := range frame.topMoves {
-		candidate := &frame.topMoves[i]
-		if candidate.pass || !state.inBounds(candidate.x, candidate.y) {
-			continue
-		}
-		if state.get(candidate.x, candidate.y) != background {
-			continue
-		}
-		move = candidate
-		break
-	}
-	if move == nil {
-		return
-	}
-
-	layout := cfg.layout.normalized()
-	startX := boardOriginX() + current.move.x*stoneDiameter
-	startY := boardOriginYForLayout(layout) + current.move.y*stoneDiameter
-	endX := boardOriginX() + move.x*stoneDiameter
-	endY := boardOriginYForLayout(layout) + move.y*stoneDiameter
-
-	drawArrowLine(img, startX, startY, endX, endY, analysisBlue)
-}
-
 func drawAnalysisPanel(img *image.Paletted, cfg renderConfig) {
 	layout := cfg.layout.normalized()
 	if layout.analysisHeight <= 0 {

@@ -77,7 +77,6 @@ $ sgf2gif --katago-analyze /tmp/foo.sgf /tmp/foo.gif
 With KataGo enabled, the GIF now also includes:
 
 - ghost-stone next-move recommendations on the board
-- an arrow from the last move to KataGo's predicted next move
 - a move-quality badge and gradient last-move highlight based on the winrate gap
 - a final summary frame with phase hit rates, move-quality comparison, verdict lines, and top blunders
 - a companion analyzed SGF saved as `*.katago.sgf` for cache-based rerenders

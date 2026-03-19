@@ -1466,7 +1466,6 @@ func renderFrame(info *gameInfo, state *boardState, current *action, moveNumber,
 		drawStoneMoveNumbersWithLayout(img, state, moveNumber, cfg.showMoveNumbers, cfg.recentMoves, layout)
 	}
 	drawBoardAnnotationsWithLayout(img, state, current, layout)
-	drawAnalysisNextMoveArrow(img, state, current, cfg)
 	drawAnalysisRecommendations(img, state, cfg)
 	drawLastMoveMarkerWithColorWithLayout(img, current.move, currentMoveHighlightColor(cfg), layout)
 	drawAnalysisPanel(img, cfg)
