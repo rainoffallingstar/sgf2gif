@@ -459,6 +459,8 @@ func runSingleKataGoAnalysis(env katagoEnvironment, queries []katagoAnalysisQuer
 		hint := ""
 		if strings.Contains(stderrText, "libcudnn.so.8") {
 			hint = "\n\nHint: your KataGo binary requires cuDNN (libcudnn.so.8). On Colab, either install cuDNN or rerun with --katago-backend cpu."
+		} else if strings.Contains(stderrText, "CL_PLATFORM_NOT_FOUND_KHR") || strings.Contains(stderrText, "OpenCL error") {
+			hint = "\n\nHint: KataGo failed to initialize OpenCL. If you are on Colab, rerun with --katago-backend cpu (or install OpenCL drivers and use --katago-backend opencl)."
 		}
 		return nil, fmt.Errorf("katago exited with error: %w\n%s%s", waitErr, stderrText, hint)
 	}
@@ -625,55 +627,21 @@ func ensureKataGoEnvironment(opts katagoOptions) (katagoEnvironment, error) {
 				env.resolvedBackend = unknownKataGoBackend
 			}
 		}
-		if managedBinary && !fileExists(env.binPath) {
+	} else if opts.binPath != "" {
+		return env, fmt.Errorf("KataGo binary not found: %s", env.binPath)
+	} else {
+		switch runtime.GOOS {
+		case "darwin":
 			if path, err := exec.LookPath("katago"); err == nil {
 				env.binPath = path
 				tag, _ := detectKataGoVersionTag(env.binPath)
 				env.releaseTag = tag
-			} else {
-				switch runtime.GOOS {
-				case "darwin":
-					return env, fmt.Errorf("KataGo is not installed. On macOS, install it with `brew install katago`")
-				case "linux", "windows":
-					release, err := fetchLatestKataGoRelease(opts.httpClient, opts.releaseAPI)
-					if err != nil {
-						return env, err
-					}
-					backends, _, err := preferredKataGoBackends(runtime.GOOS, opts.backend)
-					if err != nil {
-						return env, err
-					}
-					asset, resolvedBackend, err := selectKataGoAsset(release, runtime.GOOS, runtime.GOARCH, backends)
-					if err != nil {
-						return env, err
-					}
-					if err := os.MkdirAll(filepath.Dir(env.binPath), 0o755); err != nil {
-						return env, err
-					}
-					if err := downloadAndExtractKataGoBinary(opts.httpClient, asset.URL, env.binPath); err != nil {
-						return env, err
-					}
-					env.releaseTag = release.TagName
-					env.resolvedBackend = resolvedBackend
-					if err := writeKataGoBackendMarker(rootDir, resolvedBackend); err != nil {
-						return env, err
-					}
-				default:
-					return env, fmt.Errorf("automatic KataGo download is not supported on %s", runtime.GOOS)
-				}
+				break
 			}
-		}
-	} else if opts.binPath != "" {
-		return env, fmt.Errorf("KataGo binary not found: %s", env.binPath)
-	} else if path, err := exec.LookPath("katago"); err == nil {
-		env.binPath = path
-		tag, _ := detectKataGoVersionTag(env.binPath)
-		env.releaseTag = tag
-	} else {
-		switch runtime.GOOS {
-		case "darwin":
 			return env, fmt.Errorf("KataGo is not installed. On macOS, install it with `brew install katago`")
 		case "linux", "windows":
+			// On Linux/Windows, prefer a managed binary download over any unrelated `katago` found on PATH,
+			// because environment-provided binaries can be built for the wrong backend (e.g. OpenCL-only).
 			release, err := fetchLatestKataGoRelease(opts.httpClient, opts.releaseAPI)
 			if err != nil {
 				return env, err
