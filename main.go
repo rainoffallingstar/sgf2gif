@@ -426,7 +426,11 @@ func sgfToGifs(opts *options) ([]renderOutput, error) {
 			}
 		}
 		if analysis != nil {
-			analysis.summary = buildAnalysisSummary(actions, analysis)
+			specs, err := actionsToFrameSpecs(initial, actions, koRule)
+			if err != nil {
+				return nil, err
+			}
+			analysis.summary = buildAnalysisSummaryFromSpecs(specs, analysis)
 		}
 
 		cfg := renderConfig{

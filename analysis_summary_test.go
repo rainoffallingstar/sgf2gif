@@ -27,7 +27,17 @@ func TestBuildAnalysisSummaryCountsPhasesAndCategories(t *testing.T) {
 		},
 	}
 
-	summary := buildAnalysisSummary(actions, analysis)
+	specs := []frameSpec{
+		{current: actions[0], moveNumber: 1},
+		{current: actions[1], moveNumber: 2},
+		{current: actions[2], moveNumber: 2},
+		{current: actions[3], moveNumber: 3},
+		{current: actions[4], moveNumber: 4},
+		{current: actions[5], moveNumber: 5},
+		{current: actions[6], moveNumber: 6},
+	}
+
+	summary := buildAnalysisSummaryFromSpecs(specs, analysis)
 	if summary == nil {
 		t.Fatal("buildAnalysisSummary returned nil")
 	}
@@ -110,5 +120,17 @@ func TestRecommendationHitPrefersPlayedHitWhenKnown(t *testing.T) {
 	frame.playedHit = false
 	if frame.recommendationHit() {
 		t.Fatal("expected recommendationHit=false when playedHit is known false")
+	}
+}
+
+func TestBuildAnalysisSummaryReturnsSummaryWhenNoMoves(t *testing.T) {
+	specs := []frameSpec{{current: &action{comment: "diagram"}}}
+	analysis := &analysisSeries{frames: []positionAnalysis{{topMoves: []analysisMove{{move: "D4"}}}}}
+	summary := buildAnalysisSummaryFromSpecs(specs, analysis)
+	if summary == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if summary.totalMoves != 0 {
+		t.Fatalf("totalMoves = %d, want 0", summary.totalMoves)
 	}
 }

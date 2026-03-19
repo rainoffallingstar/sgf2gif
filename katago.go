@@ -197,7 +197,7 @@ func analyzeActionsWithKataGo(info *gameInfo, initial *boardState, actions []*ac
 	series := &analysisSeries{frames: frames}
 	series.diagnostics, _ = buildKataGoDiagnosticsReport(opts)
 	series.cacheMeta = buildKataGoCacheMetadata(opts, env.resolvedBackend)
-	series.summary = buildAnalysisSummary(actions, series)
+	series.summary = buildAnalysisSummaryFromSpecs(specs, series)
 	return series, nil
 }
 

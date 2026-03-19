@@ -66,7 +66,7 @@ type phaseSnapshot struct {
 	valid bool
 }
 
-func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysisSummary {
+func buildAnalysisSummaryFromSpecs(specs []frameSpec, analysis *analysisSeries) *analysisSummary {
 	if analysis == nil || len(analysis.frames) == 0 {
 		return nil
 	}
@@ -86,15 +86,12 @@ func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysis
 		{label: "Blunder"},
 	}
 
-	totalFrames := minInt(len(actions), len(analysis.frames))
+	totalFrames := minInt(len(specs), len(analysis.frames))
 	moveIndexes := make([]int, 0, totalFrames)
 	for i := 0; i < totalFrames; i++ {
-		if actions[i] != nil && actions[i].move != nil {
+		if specs[i].current != nil && specs[i].current.move != nil {
 			moveIndexes = append(moveIndexes, i)
 		}
-	}
-	if len(moveIndexes) == 0 {
-		return nil
 	}
 
 	summary := &analysisSummary{
@@ -109,7 +106,7 @@ func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysis
 	blackStreak := 0
 	whiteStreak := 0
 	for moveOrdinal, frameIndex := range moveIndexes {
-		action := actions[frameIndex]
+		action := specs[frameIndex].current
 		frame := analysis.frames[frameIndex]
 		phaseIdx := phaseIndex(moveOrdinal, len(moveIndexes))
 		categoryIdx := categoryIndex(frame)
@@ -151,7 +148,7 @@ func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysis
 			lossStat.count++
 			if !worst.valid || frame.winrateGap > worst.gap {
 				worst.white = action.move.white
-				worst.moveNumber = action.moveNumber
+				worst.moveNumber = specs[frameIndex].moveNumber
 				if worst.moveNumber == 0 {
 					worst.moveNumber = moveOrdinal + 1
 				}
@@ -171,13 +168,13 @@ func buildAnalysisSummary(actions []*action, analysis *analysisSeries) *analysis
 					loss:       frame.moveLoss,
 					valid:      true,
 				}
-				if action.moveNumber > 0 {
-					summary.biggestSwing.moveNumber = action.moveNumber
+				if specs[frameIndex].moveNumber > 0 {
+					summary.biggestSwing.moveNumber = specs[frameIndex].moveNumber
 				}
 			}
 			summary.topBlunders = appendTopBlunder(summary.topBlunders, moveSnapshot{
 				white:      action.move.white,
-				moveNumber: firstNonZero(action.moveNumber, moveOrdinal+1),
+				moveNumber: firstNonZero(specs[frameIndex].moveNumber, moveOrdinal+1),
 				move:       frame.playedMove,
 				label:      qualityLabelForGap(frame.winrateGap),
 				gap:        frame.winrateGap,
