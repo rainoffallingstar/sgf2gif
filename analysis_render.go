@@ -483,7 +483,10 @@ func drawAnalysisSummaryPanel(img *image.Paletted, panelLeft, panelTop, panelRig
 func drawSummaryRateRow(img *image.Paletted, left, baselineY, width int, label string, counter moveQualityCounter, colorIndex uint8) {
 	drawText(img, left, baselineY, label, color.Black)
 	barLeft := left + 14
-	barWidth := maxInt(24, width-68)
+	rateText := fmt.Sprintf("%.0f%% %s", counter.rate()*100, counter.label())
+	textWidth := minInt(72, maxInt(48, width/3))
+	textLeft := left + width - textWidth
+	barWidth := maxInt(20, textLeft-barLeft-6)
 	barTop := baselineY - 10
 	barBottom := barTop + 7
 	drawRectOutline(img, barLeft, barTop, barLeft+barWidth, barBottom, gridLine)
@@ -491,7 +494,7 @@ func drawSummaryRateRow(img *image.Paletted, left, baselineY, width int, label s
 	if fillWidth > 0 {
 		fillRect(img, barLeft+1, barTop+1, barLeft+fillWidth, barBottom-1, colorIndex)
 	}
-	drawText(img, barLeft+barWidth+6, baselineY, fmt.Sprintf("%.0f%% %s", counter.rate()*100, counter.label()), color.Black)
+	drawText(img, textLeft, baselineY, fitText(rateText, textWidth), color.Black)
 }
 
 func drawDualComparisonBar(img *image.Paletted, left, top, width, height, blackCount, whiteCount, maxCount int) {

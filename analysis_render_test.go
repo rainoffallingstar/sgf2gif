@@ -102,3 +102,23 @@ func TestDrawAnalysisPanelRendersSummaryWhenCurrentFrameIsOutOfRange(t *testing.
 		t.Fatal("expected summary panel to render visible content even when currentFrame is out of range")
 	}
 }
+
+func TestDrawSummaryRateRowKeepsTextInsideCell(t *testing.T) {
+	img := image.NewPaletted(image.Rect(0, 0, 140, 40), palette)
+	fill(img, background)
+
+	cellLeft := 8
+	cellWidth := 92
+	cellRight := cellLeft + cellWidth
+	drawRectOutline(img, cellLeft, 4, cellRight, 34, gridLine)
+	drawSummaryRateRow(img, cellLeft+4, 22, cellWidth-8, "B", moveQualityCounter{hits: 97, total: 97}, analysisBlue)
+
+	for y := 5; y < 34; y++ {
+		for x := cellRight + 1; x < img.Bounds().Dx(); x++ {
+			colorIndex := img.ColorIndexAt(x, y)
+			if colorIndex != background {
+				t.Fatalf("found drawn pixel outside summary cell at (%d,%d)", x, y)
+			}
+		}
+	}
+}
