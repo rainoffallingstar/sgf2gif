@@ -1118,6 +1118,10 @@ func actionsToFrames(info *gameInfo, initial *boardState, actions []*action, cfg
 		return nil, err
 	}
 
+	if cfg.analysis != nil && cfg.analysis.summary == nil {
+		cfg.analysis.summary = buildAnalysisSummaryFromSpecs(specs, cfg.analysis)
+	}
+
 	extraFrame := 0
 	if cfg.analysis != nil && cfg.analysis.summary != nil && len(specs) > 0 {
 		extraFrame = 1
